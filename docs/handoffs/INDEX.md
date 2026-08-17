@@ -23,9 +23,8 @@
 
 | # | Ticket | 类型 | 阻塞 | Handoff 文档 | 状态 |
 |---|---|---|---|---|---|
-| #5 | [核心数据模型设计](https://github.com/li-yongqvan/ai-forum/issues/5) | grilling | 已解锁（#4 已解决） | 待建 | frontier |
 | #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | grilling | 已解锁（#4 已解决） | 待建 | frontier |
-| #6 | [移动端首页与帖子详情原型](https://github.com/li-yongqvan/ai-forum/issues/6) | prototype | 被 #5 阻塞 | 待建 | 阻塞 |
+| #6 | [移动端首页与帖子详情原型](https://github.com/li-yongqvan/ai-forum/issues/6) | prototype | 已解锁（#5 已解决） | 待建 | frontier |
 
 ## 已解决
 
@@ -35,6 +34,7 @@
 | #3 | [移动端前端技术方案调研](https://github.com/li-yongqvan/ai-forum/issues/3) | 2026-08-17 | Vue 3 + Vite + Vant PWA，REST(OpenAPI) ↔ Go，gRPC 仅服务间。详见 `docs/research/mobile-frontend-selection.md` |
 | #7 | [深模块设计规范落地形式](https://github.com/li-yongqvan/ai-forum/issues/7) | 2026-08-17 | 采纳 codebase-design 词表 + 设计语境反义词禁令；Interface README 覆盖有外部调用方的模块；检查清单并入 code-review；包边界 = 服务候选边界，MVP 不建抽象层。详见 `docs/design-principles.md` |
 | #4 | [MVP 服务拆分与模块边界](https://github.com/li-yongqvan/ai-forum/issues/4) | 2026-08-17 | 组合 A 模块化单体 + 4 包（user/content/notify/moderation）+ 粗粒度命令/读模型接口 + 进程内 goroutine 异步 + notify 叶子快照化 + 单进程多 schema 部署。决议见 issue #4 comment |
+| #5 | [核心数据模型设计](https://github.com/li-yongqvan/ai-forum/issues/5) | 2026-08-17 | 14 表 / 4 schema 数据模型定案（50 人规模）：BIGSERIAL 主键、包内物理FK/包间逻辑外键、邻接表+floor 树状评论、关注单向、通知快照化、治理 append-only 审计。决议见 [#5 resolution comment](https://github.com/li-yongqvan/ai-forum/issues/5#issuecomment-5317256635) |
 
 ## 约定
 
