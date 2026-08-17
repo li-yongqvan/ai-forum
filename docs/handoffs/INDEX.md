@@ -23,9 +23,8 @@
 
 | # | Ticket | 类型 | 阻塞 | Handoff 文档 | 状态 |
 |---|---|---|---|---|---|
-| #4 | [MVP 服务拆分与模块边界](https://github.com/li-yongqvan/ai-forum/issues/4) | grilling | 已解锁 | 待建 | frontier |
-| #5 | [核心数据模型设计](https://github.com/li-yongqvan/ai-forum/issues/5) | grilling | 被 #4 阻塞 | 待建 | 阻塞 |
-| #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | grilling | 被 #4 阻塞 | 待建 | 阻塞 |
+| #5 | [核心数据模型设计](https://github.com/li-yongqvan/ai-forum/issues/5) | grilling | 已解锁（#4 已解决） | 待建 | frontier |
+| #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | grilling | 已解锁（#4 已解决） | 待建 | frontier |
 | #6 | [移动端首页与帖子详情原型](https://github.com/li-yongqvan/ai-forum/issues/6) | prototype | 被 #5 阻塞 | 待建 | 阻塞 |
 
 ## 已解决
@@ -35,6 +34,7 @@
 | #2 | [Go 后端框架与微服务框架选型调研](https://github.com/li-yongqvan/ai-forum/issues/2) | 2026-08-17 | 组合 A（Gin 模块化单体 + GORM + Compose/Caddy）主推；组合 B（BFF + 2~3 gRPC 服务）学微服务。详见 `docs/research/go-backend-framework-selection.md` |
 | #3 | [移动端前端技术方案调研](https://github.com/li-yongqvan/ai-forum/issues/3) | 2026-08-17 | Vue 3 + Vite + Vant PWA，REST(OpenAPI) ↔ Go，gRPC 仅服务间。详见 `docs/research/mobile-frontend-selection.md` |
 | #7 | [深模块设计规范落地形式](https://github.com/li-yongqvan/ai-forum/issues/7) | 2026-08-17 | 采纳 codebase-design 词表 + 设计语境反义词禁令；Interface README 覆盖有外部调用方的模块；检查清单并入 code-review；包边界 = 服务候选边界，MVP 不建抽象层。详见 `docs/design-principles.md` |
+| #4 | [MVP 服务拆分与模块边界](https://github.com/li-yongqvan/ai-forum/issues/4) | 2026-08-17 | 组合 A 模块化单体 + 4 包（user/content/notify/moderation）+ 粗粒度命令/读模型接口 + 进程内 goroutine 异步 + notify 叶子快照化 + 单进程多 schema 部署。决议见 issue #4 comment |
 
 ## 约定
 
