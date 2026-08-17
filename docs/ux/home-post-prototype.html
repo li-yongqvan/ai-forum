@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>AI 智联论坛 · 首页与帖子详情原型 (#6)</title>
+<style>
+/* ============ §1.2 调色板 token（双主题，三态规则） ============ */
+:root{
+  --bg:#F6F4EF; --surface:#FFFFFF; --surface-2:#EFECE4; --surface-3:#E7E3D9;
+  --ink:#1B2434; --ink-2:#57606E; --ink-3:#828C9B; --line:#E4E0D6;
+  --brand:#1F3A5F; --brand-2:#2B5FA8; --brand-soft:#E4ECF5;
+  --accent:#E8A33D; --accent-strong:#C07A10; --accent-soft:#FBF0DC; --accent-ink:#6B4309;
+  --danger:#D64541; --success:#2F7D50;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#12161D; --surface:#1A2029; --surface-2:#212936; --surface-3:#293343;
+    --ink:#E9ECF2; --ink-2:#A6B0C0; --ink-3:#78839A; --line:#333E4F;
+    --brand:#5B8DCC; --brand-2:#7FA8DC; --brand-soft:#22334A;
+    --accent:#E8A33D; --accent-strong:#E8A33D; --accent-soft:#3A2C14; --accent-ink:#F0C886;
+    --danger:#E3655F; --success:#4CA075;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12161D; --surface:#1A2029; --surface-2:#212936; --surface-3:#293343;
+  --ink:#E9ECF2; --ink-2:#A6B0C0; --ink-3:#78839A; --line:#333E4F;
+  --brand:#5B8DCC; --brand-2:#7FA8DC; --brand-soft:#22334A;
+  --accent:#E8A33D; --accent-strong:#E8A33D; --accent-soft:#3A2C14; --accent-ink:#F0C886;
+  --danger:#E3655F; --success:#4CA075;
+}
+/* ============ 基础 ============ */
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  font-family:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Noto Sans CJK SC",-apple-system,"Segoe UI",sans-serif;
+  background:#0E1420 radial-gradient(1200px 700px at 18% -6%, rgba(43,95,168,.28), transparent 60%),
+              radial-gradient(900px 620px at 88% 108%, rgba(232,163,61,.14), transparent 55%), #0E1420;
+  display:flex; align-items:center; justify-content:center; min-height:100vh; overflow:hidden;
+  color:var(--ink);
+}
+button{font-family:inherit;border:none;background:none;cursor:pointer;color:inherit}
+input,textarea{font-family:inherit;color:inherit}
+svg{display:block}
+/* ============ §1.4 手机框 ============ */
+.phone{
+  width:390px;height:844px;max-height:94vh;background:var(--bg);
+  border-radius:46px;overflow:hidden;position:relative;display:flex;flex-direction:column;
+  box-shadow:0 40px 90px -20px rgba(0,0,0,.65),0 0 0 10px #1A1F2B,0 0 0 12px #2A3243;
+}
+.phone::before{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:radial-gradient(circle, var(--brand) 1px, transparent 1.2px);
+  background-size:26px 26px;opacity:.055;
+}
+@media (max-width:430px){
+  body{background:var(--bg)}
+  .phone{width:100%;height:100%;max-height:none;border-radius:0;box-shadow:none}
+}
+/* ============ 状态栏 / 导航栏 / Tab / FAB ============ */
+.statusbar{
+  height:44px;flex:none;display:flex;align-items:center;justify-content:space-between;
+  padding:0 26px 0 30px;font-size:14px;font-weight:600;position:relative;z-index:5;color:var(--ink);
+}
+.statusbar .sicons{display:flex;align-items:center;gap:6px}
+.navbar{
+  height:48px;flex:none;display:flex;align-items:center;gap:4px;padding:0 8px;
+  position:relative;z-index:5;
+}
+.navbar .ntitle{flex:1;text-align:center;font-size:16.5px;font-weight:700;letter-spacing:.02em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.navbar .nbtn{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:12px;color:var(--ink)}
+.navbar .nbtn:active{background:var(--surface-2)}
+.navbar .nbtn.placeholder{visibility:hidden}
+.tabbar{
+  flex:none;height:calc(58px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom);
+  display:flex;background:var(--surface);border-top:1px solid var(--line);position:relative;z-index:5;
+}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:10.5px;color:var(--ink-3);min-height:44px;position:relative}
+.tab.on{color:var(--brand);font-weight:600}
+.tab .dot{position:absolute;top:8px;right:calc(50% - 20px);min-width:16px;height:16px;border-radius:8px;background:var(--accent-strong);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;font-variant-numeric:tabular-nums}
+.fab{
+  position:absolute;right:18px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:6;
+  width:54px;height:54px;border-radius:50%;background:var(--accent-strong);color:#fff;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 10px 24px -6px rgba(192,122,16,.55);transition:transform .15s;
+}
+.fab:active{transform:scale(.92)}
+/* ============ 页面容器 ============ */
+#view{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;z-index:1;overscroll-behavior:contain}
+#view::-webkit-scrollbar{width:0}
+.page{animation:pageIn .24s ease;padding:0 0 24px}
+@keyframes pageIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+/* ============ 通用组件 ============ */
+.seg{display:flex;background:var(--surface-2);border-radius:12px;padding:3px;margin:10px 16px 4px}
+.seg button{flex:1;height:36px;border-radius:9px;font-size:13.5px;font-weight:600;color:var(--ink-2);transition:all .18s}
+.seg button.on{background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(31,58,95,.28)}
+.banner{margin:10px 12px;background:var(--brand-soft);border-radius:14px;padding:12px 14px;font-size:12px;color:var(--brand);line-height:1.65}
+.card{background:var(--surface);border-radius:16px;margin:10px 12px;padding:14px 14px 10px;border:1px solid var(--line);transition:transform .12s}
+.card:active{transform:scale(.985)}
+.prow{display:flex;align-items:center;gap:10px}
+.avatar{width:38px;height:38px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px}
+.avatar.sm{width:30px;height:30px;font-size:12px}
+.pname{font-size:13.5px;font-weight:600}
+.pmeta{font-size:11.5px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 0}
+.chip{font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:7px;background:var(--brand-soft);color:var(--brand)}
+.chip.pin{background:var(--accent-soft);color:var(--accent-ink)}
+.chip.ess{background:#F3E4F0;color:#8A3B7E}
+:root[data-theme="dark"] .chip.ess{background:#33222F;color:#D9A5CC}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .chip.ess{background:#33222F;color:#D9A5CC}}
+.ptitle{font-size:15.5px;font-weight:700;line-height:1.42;margin:8px 0 4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pabstract{font-size:13px;color:var(--ink-2);line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pacts{display:flex;align-items:center;margin-top:8px;border-top:1px solid var(--line);padding-top:4px}
+.pact{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;height:44px;font-size:12.5px;color:var(--ink-2);border-radius:10px;font-variant-numeric:tabular-nums}
+.pact:active{background:var(--surface-2)}
+.pact.on{color:var(--accent-strong);font-weight:600}
+.pact.on.heart{color:var(--danger)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:44px;padding:0 20px;border-radius:12px;font-size:14px;font-weight:600;transition:transform .12s}
+.btn:active{transform:scale(.96)}
+.btn.pri{background:var(--brand);color:#fff}
+.btn.acc{background:var(--accent-strong);color:#fff}
+.btn.ghost{background:var(--surface-2);color:var(--ink)}
+.btn.danger{background:var(--danger);color:#fff}
+.btn.sm{height:34px;padding:0 14px;font-size:13px;border-radius:10px}
+.btn.block{width:100%}
+.empty{padding:56px 32px;text-align:center;color:var(--ink-2)}
+.empty .eicon{width:72px;height:72px;margin:0 auto 14px;border-radius:24px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--ink-3)}
+.empty .etitle{font-size:14.5px;font-weight:600;color:var(--ink);margin-bottom:6px}
+.empty .edesc{font-size:12.5px;line-height:1.6;margin-bottom:16px}
+.listend{text-align:center;font-size:11.5px;color:var(--ink-3);padding:18px 0 6px;font-variant-numeric:tabular-nums}
+.loadmore{display:flex;align-items:center;justify-content:center;height:46px;margin:8px 16px;background:var(--surface);border:1px solid var(--line);border-radius:14px;font-size:13.5px;font-weight:600;color:var(--brand)}
+.loadmore:active{background:var(--surface-2)}
+.divider{height:8px;background:var(--surface-2);margin:6px 0}
+.sheetmask{position:absolute;inset:0;background:rgba(12,16,24,.45);z-index:20;animation:fadeIn .2s}
+@keyframes fadeIn{from{opacity:0}}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:21;background:var(--surface);border-radius:22px 22px 0 0;padding:8px 0 calc(14px + env(safe-area-inset-bottom));animation:sheetUp .26s cubic-bezier(.2,.9,.3,1);max-height:70vh;overflow-y:auto}
+@keyframes sheetUp{from{transform:translateY(100%)}to{transform:none}}
+.sheet .grab{width:38px;height:4px;border-radius:2px;background:var(--surface-3);margin:4px auto 10px}
+.sheet .stitle{font-size:15px;font-weight:700;text-align:center;padding:0 20px 10px}
+.sitem{display:flex;align-items:center;gap:12px;width:100%;min-height:52px;padding:12px 20px;font-size:14.5px;text-align:left}
+.sitem:active{background:var(--surface-2)}
+.sitem .sic{color:var(--ink-2)}
+.sitem.danger{color:var(--danger)} .sitem.danger .sic{color:var(--danger)}
+.sitem .sub{font-size:11.5px;color:var(--ink-2);display:block;margin-top:2px}
+.toast{
+  position:absolute;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);
+  background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:12px;font-size:13px;z-index:40;
+  animation:toastIn .25s cubic-bezier(.2,.9,.3,1);white-space:nowrap;max-width:86%;overflow:hidden;text-overflow:ellipsis;
+  box-shadow:0 8px 22px rgba(0,0,0,.3);
+}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,14px)}to{opacity:1;transform:translate(-50%,0)}}
+@media (prefers-reduced-motion: reduce){
+  .page,.sheet,.toast,.fab,.card,.btn{animation:none!important;transition:none!important}
+}
+/* ============ 帖子详情 / 评论树 ============ */
+.detail{padding:14px 16px 90px}
+.dtitle{font-size:20px;font-weight:800;line-height:1.4;margin:10px 0}
+.dmeta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);flex-wrap:wrap}
+.dbar{position:absolute;left:0;right:0;bottom:0;z-index:8;background:var(--surface);border-top:1px solid var(--line);padding:8px 12px calc(8px + env(safe-area-inset-bottom));display:flex;gap:8px;align-items:center}
+.dbar .cinput{flex:1;height:40px;background:var(--surface-2);border-radius:12px;padding:0 14px;font-size:13.5px;display:flex;align-items:center;color:var(--ink-3);border:none;outline:none}
+.dbar .cinput:focus{color:var(--ink)}
+.dbar .sbtn{width:40px;height:40px;border-radius:12px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.dbar .login-tip{flex:1;height:40px;background:var(--surface-2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--brand);font-weight:600}
+.dacts{display:flex;gap:10px;margin:16px 0 4px}
+.dacts .btn{flex:1;height:42px;font-size:13px}
+.md{font-size:14.5px;line-height:1.75;color:var(--ink);word-break:break-word;margin-top:12px}
+.md p{margin:0 0 10px}
+.md code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;background:var(--surface-2);padding:2px 6px;border-radius:6px}
+.md pre{background:#1B2434;color:#E6EDF7;border-radius:14px;padding:14px;margin:10px 0;overflow-x:auto;font-size:12.5px;line-height:1.6}
+.md pre code{background:none;padding:0;color:inherit}
+.md a{color:var(--brand-2);text-decoration:none;border-bottom:1px dashed var(--brand-2)}
+.md strong{font-weight:700}
+.md img{max-width:100%;border-radius:12px;margin:6px 0}
+.chead{font-size:14px;font-weight:700;margin:18px 0 4px;font-variant-numeric:tabular-nums}
+.comment{padding:12px 0;border-top:1px solid var(--line)}
+.comment .cbody{font-size:13.5px;line-height:1.65;margin:6px 0 4px}
+.comment .cmeta{display:flex;gap:14px;font-size:11.5px;color:var(--ink-2);align-items:center;flex-wrap:wrap}
+.comment .cmeta button{font-size:11.5px;color:var(--ink-2);min-height:28px;display:inline-flex;align-items:center;gap:4px}
+.comment .floor{color:var(--ink-3);font-variant-numeric:tabular-nums;margin-left:auto}
+.replies{margin:4px 0 0 16px;padding-left:12px;border-left:2px solid var(--surface-3)}
+.replies .comment{border-top:none;padding:8px 0}
+.collapse-btn{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--brand-2);font-weight:600;min-height:36px;margin-left:16px}
+.cdeleted{color:var(--ink-3);font-size:12.5px;font-style:normal;background:var(--surface-2);border-radius:8px;padding:6px 10px;display:inline-block}
+@keyframes hlFade{0%{background:var(--accent-soft)}100%{background:transparent}}
+.hl{animation:hlFade 1.6s ease forwards;border-radius:10px}
+/* ============ 演示控制台 ============ */
+.democtl{position:absolute;top:54px;right:14px;z-index:30}
+.democtl .dbtn{height:28px;padding:0 10px;border-radius:14px;background:var(--surface);border:1px solid var(--line);font-size:11px;font-weight:700;color:var(--brand);box-shadow:0 2px 8px rgba(0,0,0,.08);display:flex;align-items:center;gap:6px}
+.democtl .dbtn:active{transform:scale(.95)}
+.role-tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;vertical-align:2px;margin-left:6px}
+.role-tag.admin{background:var(--accent-soft);color:var(--accent-ink)}
+.role-tag.mod{background:var(--brand-soft);color:var(--brand)}
+.field{margin:12px 16px}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--ink-2);margin-bottom:7px}
+.field input,.field textarea{width:100%;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:14px;outline:none}
+.field input:focus,.field textarea:focus{border-color:var(--brand-2)}
+.field textarea{min-height:120px;resize:vertical;line-height:1.6}
+.radioitem{display:flex;align-items:center;gap:12px;min-height:48px;padding:10px 20px;font-size:14px;width:100%;text-align:left;background:none;border:none;color:var(--ink)}
+.radioitem:active{background:var(--surface-2)}
+.rdot{width:19px;height:19px;border-radius:50%;border:2px solid var(--ink-3);flex:none;position:relative}
+.radioitem.on .rdot{border-color:var(--brand)}
+.radioitem.on .rdot::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--brand)}
+</style>
+</head>
+<body>
+<div class="phone" id="phone">
+  <div class="statusbar">
+    <span>9:41</span>
+    <span class="sicons" id="sicons"></span>
+  </div>
+  <div class="navbar" id="navbar"></div>
+  <div id="view"></div>
+  <div class="tabbar" id="tabbar"></div>
+  <button class="fab" id="fab" aria-label="发帖"></button>
+  <div class="democtl" id="democtl"></div>
+  <div id="overlay"></div>
+  <div id="toasts"></div>
+</div>
+<script>
+"use strict";
+/* ================= 图标库（24×24 线性 stroke 1.8 round） ================= */
+const IC=(p,s=22)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const ICONS={
+home:'<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9.5 21v-6h5v6"/>',
+grid:'<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
+bell:'<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9Z"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/>',
+user:'<circle cx="12" cy="8" r="4"/><path d="M4.5 21c1.4-3.8 4.2-5.5 7.5-5.5s6.1 1.7 7.5 5.5"/>',
+plus:'<path d="M12 5v14M5 12h14"/>',
+back:'<path d="M15 5l-7 7 7 7"/>',
+heart:'<path d="M12 20.5C7 16.5 3.5 13.2 3.5 9.3 3.5 6.4 5.8 4.5 8.2 4.5c1.6 0 3 .9 3.8 2.1.8-1.2 2.2-2.1 3.8-2.1 2.4 0 4.7 1.9 4.7 4.8 0 3.9-3.5 7.2-8.5 11.2Z"/>',
+star:'<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9Z"/>',
+share:'<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>',
+more:'<circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
+flag:'<path d="M5 21V4"/><path d="M5 4c4-2 7 2 13 0v9c-6 2-9-2-13 0"/>',
+trash:'<path d="M4 7h16M9 7V4h6v3M6.5 7l1 14h9l1-14"/><path d="M10 11v6M14 11v6"/>',
+shield:'<path d="M12 3 5 5.5v6c0 4.5 3 7.7 7 9.5 4-1.8 7-5 7-9.5v-6Z"/><path d="m9 11.5 2.2 2.2L15.5 9.5"/>',
+send:'<path d="M21 3 3 10.5l7 2.5 2.5 7Z"/><path d="M21 3 10 13"/>',
+gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M2.8 12h2.4M18.8 12h2.4M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"/>',
+pencil:'<path d="M4 20h4.5L20 8.5a2.1 2.1 0 0 0-3-3L5.5 17Z"/><path d="m14.5 7 3 3"/>',
+chat:'<path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.5 0-3-.4-4.2-1L3 21l1.6-5.1A8.5 8.5 0 1 1 21 12Z"/>',
+pin:'<path d="M9 4h6l-1 7 3.5 3v2h-11v-2L10 11Z"/><path d="M12 16v5"/>',
+award:'<circle cx="12" cy="9" r="5"/><path d="m8.5 13-1.5 8 5-2.6L17 21l-1.5-8"/>',
+warn:'<path d="M12 3.5 22 20H2Z"/><path d="M12 10v4.5M12 17.5v.5"/>',
+ban:'<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
+x:'<path d="M6 6l12 12M18 6 6 18"/>',
+comment:'<path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.5 0-3-.4-4.2-1L3 21l1.6-5.1A8.5 8.5 0 1 1 21 12Z"/>',
+sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2.5 12h2M19.5 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+moon:'<path d="M20 14.5A8 8 0 1 1 9.5 4 6.5 6.5 0 0 0 20 14.5Z"/>',
+lock:'<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
+};
+const icon=(n,s)=>IC(ICONS[n]||'',s);
+document.getElementById('sicons').innerHTML=
+ '<svg width="17" height="11" viewBox="0 0 17 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="4.5" y="5" width="3" height="6" rx="1"/><rect x="9" y="2.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="0" width="3" height="11" rx="1" opacity=".4"/></svg>'+
+ '<svg width="16" height="11" viewBox="0 0 16 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.5 3.5a10 10 0 0 1 13 0"/><path d="M4 6.2a6.6 6.6 0 0 1 8 0"/><path d="M6.6 8.8a3.2 3.2 0 0 1 2.8 0"/></svg>'+
+ '<svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".45"/><rect x="2" y="2" width="15" height="8" rx="2" fill="currentColor"/><path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity=".45"/></svg>';
+</script>
+<script>
+"use strict";
+/* ================= Mock 数据（AI 社团语境，含 14 帖以验证分页） ================= */
+const DB={
+users:[
+ {id:'u1',name:'顾言',role:'admin',bio:'AI 社社长',color:'#1F3A5F'},
+ {id:'u2',name:'林澜',role:'moderator',bio:'副社长｜RAG',color:'#2B5FA8'},
+ {id:'u3',name:'沈知行',role:'user',bio:'Agent 开发学习中',color:'#C07A10'},
+ {id:'u4',name:'苏挽',role:'user',bio:'数模竞赛队队长',color:'#8A3B7E'},
+ {id:'u5',name:'陈默',role:'user',bio:'PyTorch 踩坑实录作者',color:'#2F7D50'},
+ {id:'u6',name:'何昭',role:'user',bio:'Transformer 论文共读发起人',color:'#B5474C'},
+],
+boards:[
+ {id:'b1',name:'学习讨论',desc:'课程、教程与学习方法',color:'#1F3A5F',icon:'chat'},
+ {id:'b2',name:'项目实战',desc:'代码、框架与工程实践',color:'#2B5FA8',icon:'gear'},
+ {id:'b3',name:'论文速递',desc:'论文共读与解读',color:'#8A3B7E',icon:'award'},
+ {id:'b4',name:'竞赛组队',desc:'数模、Kaggle、Hackathon',color:'#C07A10',icon:'flag'},
+ {id:'b5',name:'活动公告',desc:'工作坊、讲座与招新',color:'#2F7D50',icon:'bell'},
+ {id:'b6',name:'闲聊灌水',desc:'面经、日常与树洞',color:'#57606E',icon:'more'},
+],
+topics:[
+ {id:'t1',name:'LLM',board:'b1'},{id:'t2',name:'RAG',board:'b1'},{id:'t3',name:'Agent',board:'b2'},
+ {id:'t4',name:'PyTorch',board:'b2'},{id:'t5',name:'数模竞赛',board:'b4'},{id:'t6',name:'Transformer',board:'b3'},
+ {id:'t7',name:'微调',board:'b1'},{id:'t8',name:'提示工程',board:'b1'},{id:'t9',name:'工作坊',board:'b5'},
+ {id:'t10',name:'求职面经',board:'b6'},
+],
+posts:[
+ {id:'p1',board:'b5',topic:null,author:'u1',title:'本学期 AI 社活动总览 & 招新安排',pinned:true,essence:false,time:'08-18 09:20',likes:23,favs:9,liked:false,faved:false,
+  body:'新学期社团安排如下：\n\n- **论文共读**：每周三晚 19:30，线上\n- **提示工程工作坊**：隔周五，实验楼 B204\n- **Agent 实战小组**：长期招募\n\n招新面向全院大一至大三，**无需基础**。'},
+ {id:'p2',board:'b1',topic:'t2',author:'u2',title:'RAG 入门到落地：检索、分块与评估的踩坑笔记',pinned:false,essence:true,time:'08-17 21:05',likes:41,favs:30,liked:false,faved:false,
+  body:'把社团知识库项目里踩过的坑整理成一篇。\n\n**分块**：固定 512 token 容易切断语义：\n\n```python\ndef split_md(text, max_len=512):\n    chunks, buf = [], \"\"\n    for line in text.split("\\n"):\n        if len(buf) + len(line) > max_len:\n            chunks.append(buf); buf = \"\"\n        buf += line + "\\n"\n    return chunks\n```\n\n**评估**：别只看召回率，`hit_rate@5` 和人工抽检都要做。'},
+ {id:'p3',board:'b2',topic:'t3',author:'u3',title:'用 ReAct 模式手写一个最小 Agent 循环',pinned:false,essence:false,time:'08-17 15:40',likes:18,favs:7,liked:false,faved:false,
+  body:'不依赖框架，50 行跑通 Thought → Action → Observation 循环：\n\n```python\nwhile step < 8:\n    thought = llm(prompt + history)\n    if "Final Answer" in thought:\n        break\n    action = parse(thought)\n    obs = tools[action.name](**action.args)\n    history += f"{thought}\\nObservation: {obs}\\n"\n```\n\n关键是 **工具描述要写清楚边界**。'},
+ {id:'p4',board:'b3',topic:'t6',author:'u6',title:'论文共读第 4 期：FlashAttention 讨论记录',pinned:false,essence:false,time:'08-16 22:12',likes:12,favs:5,liked:false,faved:false,
+  body:'本期结论速记：\n\n1. IO 感知比 FLOPs 更关键；\n2. 反向传播重计算换显存；\n3. 下期读 **RoPE**。'},
+ {id:'p5',board:'b4',topic:'t5',author:'u4',title:'数模国赛组队：缺一名编程手（Python 方向）',pinned:false,essence:false,time:'08-16 11:30',likes:9,favs:2,liked:false,faved:false,
+  body:'现有建模手 ×1、论文手 ×1，缺编程手：\n\n- 熟悉 pandas / numpy；\n- 8 月能参加两次模拟赛；\n- 有意向直接私信。'},
+ {id:'p6',board:'b2',topic:'t4',author:'u5',title:'PyTorch DataLoader 多进程踩坑：num_workers 与内存泄漏',pinned:false,essence:false,time:'08-15 20:48',likes:26,favs:14,liked:false,faved:false,
+  body:'训练到一半 RAM 爆了，排查三天，结论是 num_workers>0 时 Dataset 里持有了大对象引用。\n\n```python\n# 错误：每个 worker 复制一份大 list\nclass DS(Dataset):\n    def __init__(self, big_list): self.data = big_list\n```\n\n`persistent_workers=True` 能省启动开销。'},
+ {id:'p7',board:'b1',topic:'t9',author:'u2',title:'提示工程工作坊第二期报名（本周五晚）',pinned:false,essence:false,time:'08-15 10:02',likes:15,favs:6,liked:false,faved:false,
+  body:'第二期主题：**结构化输出与评估**。\n\n时间：本周五 19:00-21:00，实验楼 B204。限 30 人。'},
+ {id:'p8',board:'b6',topic:'t10',author:'u5',title:'秋招 AI 岗面经汇总（持续更新）',pinned:false,essence:false,time:'08-14 16:25',likes:31,favs:19,liked:false,faved:false,
+  body:'汇总社团近两年算法岗面经，覆盖简历关、Coding 关与项目深挖。\n\n评论区欢迎补充。'},
+ {id:'p9',board:'b1',topic:'t1',author:'u6',title:'LLM 长上下文评测：哪些场景真需要 128K？',pinned:false,essence:false,time:'08-13 19:20',likes:8,favs:3,liked:false,faved:false,
+  body:'长上下文不是越长越好。实测发现：\n\n- 大海捞针类任务 128K 有意义；\n- 一般 RAG 检索后摘要 4K 足够；\n- 训练成本与推理延迟显著上升。'},
+ {id:'p10',board:'b2',topic:'t4',author:'u3',title:'PyTorch 2.x compile 模式初体验：提速与陷阱',pinned:false,essence:false,time:'08-13 14:05',likes:20,favs:11,liked:false,faved:false,
+  body:'在 ResNet-18 小任务上 `torch.compile()` 提速约 25%，但调试堆栈变深：\n\n```python\nmodel = torch.compile(model)\n```\n\n遇到动态形状会重新编译，建议先固定 batch size。'},
+ {id:'p11',board:'b4',topic:'t5',author:'u4',title:'数模竞赛赛前集训：优化模型与写作分工',pinned:false,essence:false,time:'08-12 09:30',likes:14,favs:8,liked:false,faved:false,
+  body:'本周六全天集训，上午讲灵敏度分析，下午模拟 2023C 题。\n\n需自带电脑与 LaTeX 环境。'},
+ {id:'p12',board:'b3',topic:'t6',author:'u2',title:'Transformer 位置编码：从绝对到 RoPE 的直觉',pinned:false,essence:true,time:'08-11 21:50',likes:35,favs:22,liked:false,faved:false,
+  body:'RoPE 的核心直觉：把 q/k 乘上旋转矩阵，让内积自然衰减。\n\n推导板书已拍照，见文末外链。'},
+ {id:'p13',board:'b6',topic:'t10',author:'u6',title:'AI 岗一面常见开放题：如何解释过拟合？',pinned:false,essence:false,time:'08-10 16:10',likes:22,favs:15,liked:false,faved:false,
+  body:'回答框架：定义 → 原因（方差/偏差） → 检测（验证集 loss 上升） → 解决（正则/ dropout/ 数据/ 早停）。'},
+ {id:'p14',board:'b5',topic:'t9',author:'u1',title:'Agent 实战小组第一次线下碰面纪要',pinned:true,essence:false,time:'08-10 10:00',likes:17,favs:6,liked:false,faved:false,
+  body:'确定了小组目标：本学期用 ReAct + 工具调用完成一个「社团知识库问答助手」。\n\n下次碰面：8 月 24 日。'},
+],
+comments:[
+ {id:'c1',post:'p2',author:'u3',parent:null,time:'08-17 21:40',body:'分块那段深有同感！按标题层级切完 hit_rate 涨了 8 个点。',deleted:false},
+ {id:'c2',post:'p2',author:'u2',parent:'c1',time:'08-17 21:52',body:'对，表格和代码块建议整块保留。',deleted:false},
+ {id:'c3',post:'p2',author:'u6',parent:'c1',time:'08-17 22:10',body:'8 个点很可观了，样本量多少？',deleted:false},
+ {id:'c4',post:'p2',author:'u5',parent:'c1',time:'08-17 22:31',body:'马克，下周知识库重构就用这个思路。',deleted:false},
+ {id:'c5',post:'p2',author:'u4',parent:'c1',time:'08-18 08:15',body:'数模赛题的 PDF 解析后层级丢失严重，有办法吗？',deleted:false},
+ {id:'c6',post:'p2',author:'u5',parent:null,time:'08-17 23:05',body:'评估那块，人工抽检 50 条的表能分享一下模板吗？',deleted:false},
+ {id:'c7',post:'p2',author:'u5',parent:null,time:'08-17 23:40',body:'这层内容涉及人身攻击，已被处理。',deleted:true},
+ {id:'c8',post:'p2',author:'u2',parent:'c7',time:'08-18 00:02',body:'这层原评论已被处理，回复保留供上下文参考。',deleted:false},
+ {id:'c9',post:'p2',author:'u1',parent:'c1',time:'08-18 07:30',body:'按标题层级切确实更稳，我们已纳入社团规范。',deleted:false},
+ {id:'c10',post:'p3',author:'u2',parent:null,time:'08-17 16:20',body:'最小循环写得很干净。建议加一步：工具调用失败时把异常也塞进 Observation。',deleted:false},
+ {id:'c11',post:'p3',author:'u3',parent:'c10',time:'08-17 16:45',body:'好主意！超时错误喂回去之后确实会换参数重试。',deleted:false},
+ {id:'c12',post:'p5',author:'u6',parent:null,time:'08-16 14:00',body:'编程手要求会深度学习吗？还是纯数据处理就行？',deleted:false},
+],
+reports:[],
+follows:{u3:{users:['u2'],boards:['b1'],topics:['t3']}},
+};
+</script>
+<script>
+"use strict";
+/* ================= 状态 / 会话 ================= */
+const S={
+ user:DB.users.find(u=>u.id==='u3'), // 默认以成员身份进入，方便评审交互
+ theme:'system',
+ feedTab:'all',
+ feedPage:1,
+ pageSize:5,                         // 原型演示用较小页长，便于验证加载更多
+ expanded:new Set(),                 // 评论树展开
+};
+const U=id=>DB.users.find(u=>u.id===id);
+const B=id=>DB.boards.find(b=>b.id===id);
+const T=id=>DB.topics.find(t=>t.id===id);
+const P=id=>DB.posts.find(p=>p.id===id);
+const isGuest=()=>!S.user;
+const isMod=()=>S.user&&(S.user.role==='moderator'||S.user.role==='admin');
+const isAdmin=()=>S.user&&S.user.role==='admin';
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const $=sel=>document.querySelector(sel);
+/* ================= 主题（三态） ================= */
+function applyTheme(){
+ document.documentElement.removeAttribute('data-theme');
+ if(S.theme==='light')document.documentElement.setAttribute('data-theme','light');
+ if(S.theme==='dark')document.documentElement.setAttribute('data-theme','dark');
+}
+/* ================= Toast / Sheet ================= */
+function toast(msg){
+ const t=document.createElement('div');t.className='toast';t.textContent=msg;
+ $('#toasts').appendChild(t);setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),250)},2100);
+}
+function openSheet(html){
+ closeSheet();
+ const ov=$('#overlay');
+ const m=document.createElement('div');m.className='sheetmask';m.onclick=closeSheet;
+ const s=document.createElement('div');s.className='sheet';s.innerHTML='<div class="grab"></div>'+html;
+ ov.appendChild(m);ov.appendChild(s);
+}
+function closeSheet(){$('#overlay').innerHTML='';}
+/* ================= 路由（hash） ================= */
+function nav(path){location.hash='#'+path;}
+function back(){history.back();}
+function currentPath(){return (location.hash||'#/feed').slice(1);}
+function parseQ(){
+ const [path,qs]=currentPath().split('?');
+ const q={};(qs||'').split('&').forEach(kv=>{const[k,v]=kv.split('=');if(k)q[k]=decodeURIComponent(v||'')});
+ return [path,q];
+}
+function route(){
+ route$clean();
+ window.scrollTo(0,0);$('#view').scrollTop=0;
+ const [path,q]=parseQ();
+ if(path==='/feed')return renderFeed();
+ if(path==='/post'){const id=q.id||'p2';return renderPost(id,q.c);}
+ if(path==='/placeholder')return renderPlaceholder();
+ nav('/feed');
+}
+window.addEventListener('hashchange',()=>route());
+window.addEventListener('popstate',()=>route());
+function route$clean(){document.querySelectorAll('.dbar').forEach(e=>e.remove());}
+/* ================= 框架：navbar / tabbar / fab / democtl ================= */
+function frame(title,opts={}){
+ const path=currentPath().split('?')[0];
+ const nb=$('#navbar');
+ const isFeed=path==='/feed';
+ nb.innerHTML= isFeed
+  ? `<div class="nbtn placeholder"></div><div class="ntitle">${esc(title)}</div><div class="nbtn placeholder"></div>`
+  : `<button class="nbtn" onclick="back()" aria-label="返回">${icon('back')}</button><div class="ntitle">${esc(title)}</div>${opts.right||'<div class="nbtn placeholder"></div>'}`;
+ const tb=$('#tabbar');
+ const isL2=path==='/post';
+ tb.style.display=isL2?'none':'flex';
+ if(!isL2){
+  const tabs=[['/feed','home','首页'],['/placeholder','grid','板块'],['/placeholder','bell','通知'],['/placeholder','user','我的']];
+  tb.innerHTML=tabs.map(([p,ic,label])=>`<button class="tab ${path===p?'on':''}" onclick="nav('${p}')">${icon(ic)}<span>${label}</span></button>`).join('');
+ }
+ const fab=$('#fab');
+ fab.style.display=isL2?'none':'flex';
+ fab.innerHTML=icon('plus',26);
+ fab.onclick=()=>toast('发帖流程不在本原型范围内，详见 #6 范围说明');
+ const dc=$('#democtl');
+ dc.style.display=isL2?'none':'block';
+ const r=S.user?S.user.role:'guest';
+ dc.innerHTML=`<button class="dbtn" onclick="demoSheet()">演示 · ${r}${S.theme!=='system'?' · '+S.theme:''}</button>`;
+}
+/* ================= Markdown-lite ================= */
+function md(src){
+ let s=esc(src);
+ const blocks=[];
+ s=s.replace(/```(\w*)\n([\s\S]*?)```/g,(_,lang,code)=>{blocks.push(`<pre><code>${code.replace(/\n$/,'')}</code></pre>`);return "\x00"+(blocks.length-1)+"\x00";});
+ s=s.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+ s=s.replace(/(https?:\/\/[^\s]+\.(?:png|jpe?g|gif|webp))/g,'<img src="$1" alt="图片">');
+ s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+ s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+ s=s.split(/\n{2,}/).map(p=>p.trim()?`<p>${p.replace(/\n/g,'<br>')}</p>`:'').join('');
+ s=s.replace(/\x00(\d+)\x00/g,(_,i)=>blocks[+i]);
+ return `<div class="md">${s}</div>`;
+}
+/* ================= 通用组件 ================= */
+function avatar(u,cls=''){return `<span class="avatar ${cls}" style="background:${u.color}">${esc(u.name[0])}</span>`;}
+function plain(s){return String(s).replace(/```[\s\S]*?```/g,'[代码]').replace(/\*\*([^*]+)\*\*/g,'$1').replace(/`([^`]+)`/g,'$1').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').replace(/(https?:\/\/\S+)/g,'').replace(/\n+/g,' ');}
+function roleTag(u){
+ if(u.role==='admin')return '<span class="role-tag admin">社长</span>';
+ if(u.role==='moderator')return '<span class="role-tag mod">副社长</span>';return '';
+}
+function empty(iconName,title,desc,btn){
+ return `<div class="empty"><div class="eicon">${icon(iconName,32)}</div><div class="etitle">${title}</div><div class="edesc">${desc}</div>${btn||''}</div>`;
+}
+function seg(items,cur,fn){
+ return `<div class="seg">${items.map(([k,label])=>`<button class="${cur===k?'on':''}" onclick="${fn}('${k}')">${label}</button>`).join('')}</div>`;
+}
+function sortedPosts(list){
+ return [...list].sort((a,b)=>{
+  if(a.pinned!==b.pinned)return a.pinned?-1:1;
+  return b.time.localeCompare(a.time);
+ });
+}
+function postCard(p){
+ const a=U(p.author),b=B(p.board),t=p.topic?T(p.topic):null;
+ const cmts=DB.comments.filter(c=>c.post===p.id);
+ return `<div class="card" onclick="nav('/post?id=${p.id}')">
+  <div class="prow">${avatar(a,'sm')}<div style="flex:1"><div class="pname">${esc(a.name)}${roleTag(a)}</div><div class="pmeta">${p.time}</div></div></div>
+  <div class="chips">${p.pinned?'<span class="chip pin">置顶</span>':''}${p.essence?'<span class="chip ess">精华</span>':''}<span class="chip">${esc(b.name)}</span>${t?`<span class="chip"># ${esc(t.name)}</span>`:''}</div>
+  <div class="ptitle">${esc(p.title)}</div>
+  <div class="pabstract">${esc(plain(p.body).slice(0,90))}</div>
+  <div class="pacts" onclick="event.stopPropagation()">
+   <button class="pact heart ${p.liked?'on':''}" onclick="toggleLike('${p.id}')">${icon('heart',18)}<span>${p.likes}</span></button>
+   <button class="pact" onclick="nav('/post?id=${p.id}')">${icon('comment',18)}<span>${cmts.filter(c=>!c.deleted).length}</span></button>
+   <button class="pact ${p.faved?'on':''}" onclick="toggleFav('${p.id}')">${icon('star',18)}<span>${p.favs}</span></button>
+   <button class="pact" onclick="moreSheet('${p.id}')">${icon('more',18)}</button>
+  </div></div>`;
+}
+function toggleLike(id){
+ if(isGuest()){toast('点赞需要登录');return;}
+ const p=P(id);p.liked=!p.liked;p.likes+=p.liked?1:-1;route();
+}
+function toggleFav(id){
+ if(isGuest()){toast('收藏需要登录');return;}
+ const p=P(id);p.faved=!p.faved;p.favs+=p.faved?1:-1;
+ toast(p.faved?'已收藏':'已取消收藏');route();
+}
+</script>
+<script>
+"use strict";
+/* ================= 弹窗层 ================= */
+function moreSheet(postId){
+ const p=P(postId),mine=S.user&&p.author===S.user.id;
+ let items='';
+ items+=`<button class="sitem" onclick="closeSheet();toast('分享链接已复制（演示）')"><span class="sic">${icon('share')}</span>分享</button>`;
+ items+=`<button class="sitem" onclick="closeSheet();reportSheet('帖子','${postId}')"><span class="sic">${icon('flag')}</span>举报</button>`;
+ if(mine)items+=`<button class="sitem danger" onclick="closeSheet();confirmDo('删除这篇帖子？','删除后不可恢复',()=>{deletePost('${postId}')})"><span class="sic">${icon('trash')}</span>删除帖子</button>`;
+ if(isMod()){
+  items+=`<button class="sitem" onclick="closeSheet();togglePin('${postId}')"><span class="sic">${icon('pin')}</span>${p.pinned?'取消置顶':'设为置顶'}<span class="sub">moderator/admin 可见</span></button>`;
+  items+=`<button class="sitem" onclick="closeSheet();toggleEssence('${postId}')"><span class="sic">${icon('award')}</span>${p.essence?'取消精华':'设为精华'}<span class="sub">moderator/admin 可见</span></button>`;
+  if(!mine)items+=`<button class="sitem danger" onclick="closeSheet();confirmDo('管理删除这篇帖子？','将追加 moderation_actions 审计',()=>{deletePost('${postId}',true)})"><span class="sic">${icon('shield')}</span>管理删除</button>`;
+ }
+ openSheet(`<div class="stitle">帖子操作</div>${items}`);
+}
+function togglePin(id){const p=P(id);p.pinned=!p.pinned;toast(p.pinned?'已置顶':'已取消置顶');route();}
+function toggleEssence(id){const p=P(id);p.essence=!p.essence;toast(p.essence?'已设为精华':'已取消精华');route();}
+function deletePost(id,byMod){
+ const i=DB.posts.findIndex(p=>p.id===id);if(i<0)return;
+ DB.posts.splice(i,1);toast('已删除');nav('/feed');
+}
+const REPORT_REASONS=['垃圾广告','违法违规','人身攻击','抄袭侵权','引战灌水','其他'];
+function reportSheet(targetType,target){
+ if(isGuest()){toast('举报需要登录');return;}
+ const dup=DB.reports.find(r=>r.reporter===S.user.id&&r.target===target&&r.status==='pending');
+ if(dup){toast('你已举报过该内容，请等待处理');return;}
+ const rows=REPORT_REASONS.map((r,i)=>`<button class="radioitem" data-i="${i}" onclick="this.parentNode.querySelectorAll('.radioitem').forEach(e=>e.classList.remove('on'));this.classList.add('on');window.__rs=${i}"><span class="rdot"></span>${r}</button>`).join('');
+ openSheet(`<div class="stitle">举报${targetType}</div><div id="rrows">${rows}</div>
+  <div class="field" style="margin:4px 20px 12px"><textarea id="reportNote" placeholder="补充说明（选「其他」时必填）" style="min-height:72px"></textarea></div>
+  <div style="padding:0 20px"><button class="btn acc block" onclick="submitReport('${targetType}','${target}')">提交举报</button></div>`);
+ window.__rs=-1;
+ // 初始无选中时渲染样式
+ requestAnimationFrame(()=>{document.querySelectorAll('#rrows .radioitem').forEach(e=>e.classList.toggle('on',+e.dataset.i===window.__rs));});
+}
+function submitReport(targetType,target){
+ const i=window.__rs;const note=($('#reportNote')||{}).value||'';
+ if(i<0){toast('请选择举报原因');return;}
+ if(REPORT_REASONS[i]==='其他'&&!note.trim()){toast('选「其他」时请填写说明');return;}
+ DB.reports.unshift({id:'r'+Date.now(),reporter:S.user.id,targetType,target,reason:REPORT_REASONS[i],note:note.trim(),time:'刚刚',status:'pending'});
+ closeSheet();toast('举报已提交，管理员会尽快处理');
+}
+function confirmDo(title,desc,fn){
+ window.__cf=fn;
+ openSheet(`<div class="stitle">${esc(title)}</div>
+  <div style="padding:0 24px 14px;font-size:13px;color:var(--ink-2);text-align:center;line-height:1.6">${esc(desc)}</div>
+  <div style="display:flex;gap:10px;padding:0 20px"><button class="btn ghost block" onclick="closeSheet()">取消</button><button class="btn danger block" onclick="window.__cf();closeSheet()">确认</button></div>`);
+}
+function demoSheet(){
+ const roles=[['guest','游客'],['u3','成员 · user'],['u2','副社长 · moderator'],['u1','社长 · admin']];
+ openSheet(`<div class="stitle">演示控制台</div>
+  <div style="padding:0 20px 8px;font-size:12px;color:var(--ink-2)">切换角色以验证 §5.0 权限矩阵可见性</div>
+  ${roles.map(([uid,label])=>`<button class="sitem" onclick="switchRole('${uid}')">${avatar(uid==='guest'?{name:'游',color:'#828C9B'}:U(uid),'sm')}<div>${label}</div></button>`).join('')}
+  <div style="padding:14px 20px 4px;font-size:12px;font-weight:600;color:var(--ink-2)">主题</div>
+  <div class="seg" style="margin:6px 16px 12px">
+   <button class="${S.theme==='system'?'on':''}" onclick="setTheme('system')">跟随系统</button>
+   <button class="${S.theme==='light'?'on':''}" onclick="setTheme('light')">浅色</button>
+   <button class="${S.theme==='dark'?'on':''}" onclick="setTheme('dark')">深色</button>
+  </div>`);
+}
+function switchRole(uid){
+ S.user=uid==='guest'?null:U(uid);
+ closeSheet();toast('已切换为 '+(S.user?S.user.name:'游客'));
+ S.feedPage=1;nav('/feed');
+}
+function setTheme(t){S.theme=t;applyTheme();closeSheet();route();}
+</script>
+<script>
+"use strict";
+/* ================= L1 首页信息流 ================= */
+function renderFeed(){
+ frame('AI 智联论坛');
+ let html=`<div class="banner">本原型聚焦「首页信息流」与「帖子详情」两页，其他 Tab 为占位。</div>`;
+ html+=seg([['all','全部'],['follow','关注']],S.feedTab,'setFeedTab');
+ let list;
+ if(S.feedTab==='all'){
+  list=sortedPosts(DB.posts);
+ }else{
+  if(isGuest()){
+   $('#view').innerHTML=`<div class="page">${html}${empty('lock','登录后查看关注流','关注用户、板块和话题后，他们的最新动态会聚合在这里',`<button class="btn pri" onclick="switchRole('u3')">去登录（演示）</button>`)}</div>`;
+   return;
+  }
+  const f=DB.follows[S.user.id]||{users:[],boards:[],topics:[]};
+  list=sortedPosts(DB.posts.filter(p=>f.users.includes(p.author)||f.boards.includes(p.board)||(p.topic&&f.topics.includes(p.topic))));
+ }
+ if(!list.length){
+  html+=S.feedTab==='all'
+   ?empty('chat','还没有帖子','来发第一帖吧')
+   :empty('star','还没有关注动态','去关注感兴趣的用户、板块和话题',`<button class="btn pri" onclick="setFeedTab('all')">去看看全部</button>`);
+  $('#view').innerHTML=`<div class="page">${html}</div>`;
+  return;
+ }
+ const total=list.length;
+ const paged=list.slice(0,S.feedPage*S.pageSize);
+ html+=paged.map(postCard).join('');
+ if(paged.length<total){
+  html+=`<button class="loadmore" onclick="loadMore()">加载更多（${total-paged.length} 条）</button>`;
+ }else{
+  html+=`<div class="listend">共 ${total} 条 · 到底啦（每页 ${S.pageSize} 条，演示）</div>`;
+ }
+ $('#view').innerHTML=`<div class="page">${html}</div>`;
+}
+function setFeedTab(k){S.feedTab=k;S.feedPage=1;route();}
+function loadMore(){S.feedPage++;route();}
+function renderPlaceholder(){
+ frame('未实现');
+ $('#view').innerHTML=`<div class="page">${empty('grid','本页不在 #6 原型范围内','点击底部「首页」Tab 返回体验')}</div>`;
+}
+</script>
+<script>
+"use strict";
+/* ================= L2 帖子详情 ================= */
+function commentHtml(c,post,floor){
+ if(c.deleted){
+  const replies=DB.comments.filter(r=>r.parent===c.id);
+  return `<div class="comment" id="cmt-${c.id}"><span class="cdeleted">评论已删除</span></div>${replies.length?`<div class="replies">${replies.map(r=>commentHtml(r,post)).join('')}</div>`:''}`;
+ }
+ const a=U(c.author);
+ const replies=DB.comments.filter(r=>r.parent===c.id);
+ const key='x_'+c.id;
+ const showAll=S.expanded.has(key);
+ const visible=showAll?replies:replies.slice(0,3);
+ const hidden=replies.length-visible.length;
+ const mine=S.user&&c.author===S.user.id;
+ return `<div class="comment" id="cmt-${c.id}">
+  <div class="prow">${avatar(a,'sm')}<div style="flex:1"><span class="pname">${esc(a.name)}${roleTag(a)}</span> <span class="pmeta">${c.time}</span></div>${floor?`<span class="floor">${floor}F</span>`:''}</div>
+  <div class="cbody">${esc(c.body)}</div>
+  <div class="cmeta">
+   <button onclick="replyTo('${c.id}','${esc(a.name)}')">回复</button>
+   <button onclick="reportSheet('评论','${c.id}')">举报</button>
+   ${mine?`<button onclick="confirmDo('删除这条评论？','将以「评论已删除」占位保留回复链',()=>{deleteComment('${c.id}')})">删除</button>`:''}
+   ${isMod()&&!mine?`<button style="color:var(--danger)" onclick="confirmDo('管理删除这条评论？','将追加 moderation_actions 审计',()=>{deleteComment('${c.id}',true)})">管理删除</button>`:''}
+  </div></div>
+  ${replies.length?`<div class="replies">${visible.map(r=>commentHtml(r,post)).join('')}</div>`:''}
+  ${hidden?`<button class="collapse-btn" onclick="S.expanded.add('${key}');keepCmt('${c.id}');route()">展开 ${hidden} 条回复</button>`:''}`;
+}
+function keepCmt(id){S._keep='cmt-'+id;}
+function deleteComment(cid,byMod){
+ const c=DB.comments.find(x=>x.id===cid);if(!c)return;
+ c.deleted=true;c.body='';toast('已删除');route();
+}
+function replyTo(cid,name){
+ if(isGuest()){toast('回复需要登录');return;}
+ const inp=$('#cinput');if(inp){inp.value='回复 @'+name+'：';inp.dataset.reply=cid;inp.focus();}
+}
+function renderPost(pid,anchor){
+ const p=P(pid);
+ if(!p){frame('帖子');$('#view').innerHTML=`<div class="page">${empty('trash','帖子不存在或已删除','')}</div>`;return;}
+ const a=U(p.author),b=B(p.board),t=p.topic?T(p.topic):null;
+ frame('帖子详情',{right:`<button class="nbtn" onclick="moreSheet('${p.id}')" aria-label="更多">${icon('more')}</button>`});
+ const tops=DB.comments.filter(c=>c.post===pid&&!c.parent);
+ const total=DB.comments.filter(c=>c.post===pid&&!c.deleted).length;
+ // 通知锚点：预展开祖先链
+ S._keep=null;
+ if(anchor){
+  let c=DB.comments.find(x=>x.id===anchor.replace('cmt-',''));
+  while(c&&c.parent){S.expanded.add('x_'+c.parent);c=DB.comments.find(x=>x.id===c.parent);}
+ }
+ let html=`<div class="detail">
+  <div class="prow"><span style="display:flex;align-items:center;gap:10px;flex:1">${avatar(a)}<div><div class="pname">${esc(a.name)}${roleTag(a)}</div><div class="pmeta">${p.time} · ${esc(b.name)}</div></div></span></div>
+  <div class="chips">${p.pinned?'<span class="chip pin">置顶</span>':''}${p.essence?'<span class="chip ess">精华</span>':''}<span class="chip">${esc(b.name)}</span>${t?`<span class="chip"># ${esc(t.name)}</span>`:''}</div>
+  <div class="dtitle">${esc(p.title)}</div>
+  ${md(p.body)}
+  <div class="dacts">
+   <button class="btn ghost" style="${p.liked?'color:var(--danger);font-weight:600':''}" onclick="toggleLike('${p.id}')">${icon('heart',18)}${p.liked?'已赞':'点赞'} ${p.likes}</button>
+   <button class="btn ghost" style="${p.faved?'color:var(--accent-strong);font-weight:600':''}" onclick="toggleFav('${p.id}')">${icon('star',18)}${p.faved?'已收藏':'收藏'} ${p.favs}</button>
+   <button class="btn ghost" onclick="toast('分享链接已复制（演示）')">${icon('share',18)}分享</button>
+  </div>
+  <div class="chead">评论 ${total}</div>
+  ${tops.length?tops.map((c,i)=>commentHtml(c,p,i+1)).join(''):empty('comment','还没有评论','来抢沙发')}
+ </div>`;
+ $('#view').innerHTML=`<div class="page">${html}</div>`;
+ const bar=document.createElement('div');bar.className='dbar';bar.id='dbar';
+ bar.innerHTML=isGuest()
+  ?`<button class="login-tip" onclick="switchRole('u3')">登录后参与评论（演示）</button>`
+  :`<input class="cinput" id="cinput" placeholder="写下你的评论…" data-post="${pid}"><button class="sbtn" onclick="sendComment('${pid}')" aria-label="发送">${icon('send',18)}</button>`;
+ $('#phone').appendChild(bar);
+ if(anchor){
+  requestAnimationFrame(()=>{const el=document.getElementById(anchor.startsWith('cmt-')?anchor:'cmt-'+anchor);
+   if(el){el.scrollIntoView({block:'center'});el.classList.add('hl');}});
+ }
+}
+function sendComment(pid){
+ const inp=$('#cinput');const text=inp.value.trim();
+ if(!text){toast('先说点什么吧');return;}
+ DB.comments.push({id:'c'+Date.now(),post:pid,author:S.user.id,parent:inp.dataset.reply||null,time:'刚刚',body:text,deleted:false});
+ inp.value='';delete inp.dataset.reply;toast('评论已发布');route();
+}
+/* ================= 初始化 ================= */
+applyTheme();
+route();
+</script>
+</body>
+</html>
