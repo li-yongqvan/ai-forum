@@ -24,17 +24,18 @@
 | # | Ticket | 类型 | 阻塞 | Handoff 文档 | 状态 |
 |---|---|---|---|---|---|
 | #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | grilling | 已解锁（#4 已解决） | 待建 | frontier |
-| #6 | [移动端首页与帖子详情原型](https://github.com/li-yongqvan/ai-forum/issues/6) | prototype | 已解锁（#5 已解决） | 待建 | frontier |
 
 ## 已解决
 
 | # | Ticket | 解决时间 | 结论摘要 |
 |---|---|---|---|
+| #6 | [移动端首页与帖子详情原型](https://github.com/li-yongqvan/ai-forum/issues/6) | 2026-08-18 | 以 `docs/ux/ia-prototype.html` 为基底，独立产出聚焦原型 `docs/ux/home-post-prototype.html`；覆盖首页信息流（分段/排序/分页/空态）与帖子详情（Markdown/评论树折叠/软删/锚点高亮/管理操作），角色与主题可在演示控制台切换。决议见 `docs/ux/home-post-prototype-resolution.md` |
 | #2 | [Go 后端框架与微服务框架选型调研](https://github.com/li-yongqvan/ai-forum/issues/2) | 2026-08-17 | 组合 A（Gin 模块化单体 + GORM + Compose/Caddy）主推；组合 B（BFF + 2~3 gRPC 服务）学微服务。详见 `docs/research/go-backend-framework-selection.md` |
 | #3 | [移动端前端技术方案调研](https://github.com/li-yongqvan/ai-forum/issues/3) | 2026-08-17 | Vue 3 + Vite + Vant PWA，REST(OpenAPI) ↔ Go，gRPC 仅服务间。详见 `docs/research/mobile-frontend-selection.md` |
 | #7 | [深模块设计规范落地形式](https://github.com/li-yongqvan/ai-forum/issues/7) | 2026-08-17 | 采纳 codebase-design 词表 + 设计语境反义词禁令；Interface README 覆盖有外部调用方的模块；检查清单并入 code-review；包边界 = 服务候选边界，MVP 不建抽象层。详见 `docs/design-principles.md` |
 | #4 | [MVP 服务拆分与模块边界](https://github.com/li-yongqvan/ai-forum/issues/4) | 2026-08-17 | 组合 A 模块化单体 + 4 包（user/content/notify/moderation）+ 粗粒度命令/读模型接口 + 进程内 goroutine 异步 + notify 叶子快照化 + 单进程多 schema 部署。决议见 issue #4 comment |
 | #5 | [核心数据模型设计](https://github.com/li-yongqvan/ai-forum/issues/5) | 2026-08-17 | 14 表 / 4 schema 数据模型定案（50 人规模）：BIGSERIAL 主键、包内物理FK/包间逻辑外键、邻接表+floor 树状评论、关注单向、通知快照化、治理 append-only 审计。决议见 [#5 resolution comment](https://github.com/li-yongqvan/ai-forum/issues/5#issuecomment-5317256635) |
+| #9 | [前端页面清单与信息架构](https://github.com/li-yongqvan/ai-forum/issues/9) | 2026-08-18 | 15 路由页+弹窗层、4 Tab（首页/板块/通知/我的）+ 全站 FAB、两级扁平层级（History API 导航）、治理闭环（举报内嵌+权限矩阵+举报处理+report_result 通知）、登录墙；定稿裁决：取消搜索占位、置顶/精华纳入 MVP。详见 `docs/ux/info-architecture.md`（v2）+ `docs/ux/ia-prototype.html`（Kimi Agent 版原型，裁定采纳） |
 
 ## 约定
 
