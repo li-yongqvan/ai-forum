@@ -138,6 +138,12 @@ server {
     location /healthz {
         proxy_pass http://127.0.0.1:8080/healthz;
     }
+
+    # 上传图片（#12 D1：nginx 直接托管，图片 GET 不经 Go）
+    location /uploads/ {
+        alias /opt/ai-forum/uploads/;
+        expires 30d;
+    }
 }
 ```
 
@@ -166,6 +172,10 @@ POSTGRES_DB=aiforum
 
 # JWT / 加密（请生成强随机字符串）
 JWT_SECRET=change-me-in-production
+
+# 图片上传（#12；以下为默认值，可省略）
+UPLOADS_DIR=/opt/ai-forum/uploads
+UPLOAD_MAX_BYTES=5242880
 ```
 
 ### 3.4 `backup.sh`
@@ -211,6 +221,9 @@ chmod +x /opt/ai-forum/backup.sh
    ```bash
    sudo mkdir -p /opt/ai-forum
    sudo chown $USER:$USER /opt/ai-forum
+   # 上传目录：容器 app 用户 UID=1000 需要写权限（Dockerfile 已固定，#12）
+   sudo mkdir -p /opt/ai-forum/uploads
+   sudo chown 1000:1000 /opt/ai-forum/uploads
    cd /opt/ai-forum
    ```
 

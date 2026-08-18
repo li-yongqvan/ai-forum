@@ -9,10 +9,12 @@ import type { CommentNode, Post } from '../api/types'
 import { goLoginWithReturn } from '../router'
 import { formatTime } from '../utils/format'
 import { md } from '../utils/md'
+import { insertAtCursor } from '../utils/editor'
 import AppIcon from '../components/AppIcon.vue'
 import Avatar from '../components/Avatar.vue'
 import CommentTree from '../components/CommentTree.vue'
 import Empty from '../components/Empty.vue'
+import ImagePicker from '../components/ImagePicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -219,6 +221,26 @@ async function sendComment() {
     showToast((e as Error).message || '评论失败')
   }
 }
+
+// 图片按钮的登录墙守卫（#9 §4：游客点击跳登录，返回后回到本帖）
+function guardUpload(): boolean {
+  if (auth.isLoggedIn) return true
+  goLoginWithReturn(route.fullPath)
+  return false
+}
+
+// 图片上传成功：把 URL 插入评论光标处（评论为单行输入，不补换行）
+function onImage(url: string) {
+  const el = inputEl.value
+  const start = el?.selectionStart ?? inputText.value.length
+  const end = el?.selectionEnd ?? start
+  const { value, cursor } = insertAtCursor(inputText.value, start, end, url)
+  inputText.value = value
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(cursor, cursor)
+  })
+}
 </script>
 
 <template>
@@ -279,6 +301,7 @@ async function sendComment() {
         回复 @{{ replyTo.name }}
         <button @click="replyTo = null">✕</button>
       </div>
+      <ImagePicker :before-open="guardUpload" @uploaded="onImage" />
       <input
         ref="inputEl"
         v-model="inputText"

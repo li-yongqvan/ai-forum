@@ -6,6 +6,9 @@
 # 数据库本地数据卷（#8）
 pgdata/
 
+# 开发默认上传目录（#12：dev 默认 ./data/uploads，仅本地，不入库）
+data/
+
 # Go 产物
 backend/api
 backend/*.exe

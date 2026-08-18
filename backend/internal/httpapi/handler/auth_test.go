@@ -14,17 +14,29 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
 	"github.com/li-yongqvan/ai-forum/backend/internal/testutil"
+	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
 	"gorm.io/gorm"
 )
 
 // ---- 装配 ----
 
-func newEngine(gdb *gorm.DB) *gin.Engine {
+func newEngine(t *testing.T, gdb *gorm.DB) *gin.Engine {
+	t.Helper()
+	return newEngineWithUploads(t, gdb, t.TempDir(), 0)
+}
+
+// newEngineWithUploads 允许指定上传目录与大小上限（上传集成测试用；maxBytes<=0 走默认 5MB）。
+func newEngineWithUploads(t *testing.T, gdb *gorm.DB, uploadDir string, maxBytes int64) *gin.Engine {
+	t.Helper()
 	jwtMgr := auth.NewManager("test-secret", 7*24*time.Hour)
 	userSvc := user.NewService(user.NewGormRepo(gdb), jwtMgr)
 	contentSvc := content.NewService(content.NewGormRepo(gdb), httpapi.NewUserProvider(userSvc))
-	return httpapi.NewEngine(config.Config{Env: "test", Port: "8080"}, jwtMgr, userSvc, contentSvc)
+	uploadSvc := upload.NewService(upload.Config{Dir: uploadDir, MaxBytes: maxBytes})
+	return httpapi.NewEngine(
+		config.Config{Env: "test", Port: "8080", UploadsDir: uploadDir, MaxUploadBytes: maxBytes},
+		jwtMgr, userSvc, contentSvc, uploadSvc,
+	)
 }
 
 // seedCode 直插邀请码（auth-flow §7：管理员 DB 直管，MVP 无管理 UI）。
@@ -78,7 +90,7 @@ func decodeAuthResp(t *testing.T, w *httptest.ResponseRecorder) authResp {
 
 func TestHealthz(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 	w := doJSON(t, r, http.MethodGet, "/healthz", nil, "")
 	if w.Code != http.StatusOK {
 		t.Errorf("healthz status = %d, want 200", w.Code)
@@ -89,7 +101,7 @@ func TestHealthz(t *testing.T) {
 func TestRegisterLoginMeLogoutFlow(t *testing.T) {
 	gdb := testutil.SetupPG(t)
 	seedCode(t, gdb, "CODE1")
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	w := doJSON(t, r, http.MethodPost, "/api/v1/auth/register", map[string]string{
 		"username": "alice", "email": "alice@x.edu", "password": "secret123", "invite_code": "CODE1",
@@ -148,7 +160,7 @@ func TestRegisterValidation(t *testing.T) {
 	gdb := testutil.SetupPG(t)
 	seedCode(t, gdb, "CODE2")
 	seedCode(t, gdb, "CODE2B")
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	// 非法邀请码 → 400
 	w := doJSON(t, r, http.MethodPost, "/api/v1/auth/register", map[string]string{
@@ -186,7 +198,7 @@ func TestRegisterValidation(t *testing.T) {
 func TestLoginFailures(t *testing.T) {
 	gdb := testutil.SetupPG(t)
 	seedCode(t, gdb, "CODE3")
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	w := doJSON(t, r, http.MethodPost, "/api/v1/auth/register", map[string]string{
 		"username": "bob", "email": "bob@x.edu", "password": "secret123", "invite_code": "CODE3",
@@ -214,7 +226,7 @@ func TestLoginFailures(t *testing.T) {
 
 func TestMeRequiresToken(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 	w := doJSON(t, r, http.MethodGet, "/api/v1/auth/me", nil, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("me 无 token status = %d, want 401", w.Code)

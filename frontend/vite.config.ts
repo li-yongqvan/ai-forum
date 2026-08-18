@@ -4,6 +4,9 @@ import Components from 'unplugin-vue-components/vite'
 import { VantResolver } from '@vant/auto-import-resolver'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// dev/e2e 代理目标（#12：图片 URL 带前端 Host，/uploads 也须代理到本地 Go；e2e 可用环境变量指隔离后端）
+const apiTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8080'
+
 export default defineConfig({
   plugins: [
     vue(),
@@ -33,11 +36,15 @@ export default defineConfig({
   server: {
     proxy: {
       // dev 环境 /api → 本地 Go 后端（D6）
-      '/api': 'http://localhost:8080',
+      '/api': apiTarget,
+      // #12 dev：上传图片 URL 带前端 Host（localhost:5173），须一并代理到本地 Go（开发态由 Go 托管静态）
+      '/uploads': apiTarget,
     },
   },
   test: {
     environment: 'jsdom',
     globals: true,
+    // e2e/ 是 Playwright 冒烟（testing.md §3.2），不得被 vitest 当作单测收集
+    exclude: ['e2e/**', 'node_modules/**'],
   },
 })

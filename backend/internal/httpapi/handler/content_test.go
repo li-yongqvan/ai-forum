@@ -98,7 +98,7 @@ func createPost(t *testing.T, r *gin.Engine, token string, boardID int64, title 
 // 板块/话题种子数据来自迁移 0005。
 func TestContentBoardsTopics(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	w := doJSON(t, r, http.MethodGet, "/api/v1/boards", nil, "")
 	var boards struct {
@@ -134,7 +134,7 @@ func TestContentBoardsTopics(t *testing.T) {
 // 主流程：发帖 → feed → 详情 → 评论 → 点赞/收藏 → 关注板块 → 关注流。
 func TestContentFlow(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-C1")
 	token := alice.Token
@@ -259,7 +259,7 @@ func TestContentFlow(t *testing.T) {
 // 权限矩阵（#9 §5.0）：作者删自己 / user 删他人 403 / user 置顶 403 / moderator 置顶 200。
 func TestContentPermissions(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-P1")
 	_ = registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-P2")
@@ -301,7 +301,7 @@ func TestContentPermissions(t *testing.T) {
 // 新后端能力（v2 §4）：author_id 过滤 + viewer 字段（赞/藏/关注作者）。
 func TestAuthorFilterAndViewer(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-V1")
 	bob := registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-V2")
@@ -360,7 +360,7 @@ func TestAuthorFilterAndViewer(t *testing.T) {
 // 新后端能力（v2 §4）：GET /users/:id 公开资料 + viewer.following。
 func TestUserProfileEndpoint(t *testing.T) {
 	gdb := testutil.SetupPG(t)
-	r := newEngine(gdb)
+	r := newEngine(t, gdb)
 
 	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-U1")
 	bob := registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-U2")

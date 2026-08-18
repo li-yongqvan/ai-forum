@@ -10,6 +10,7 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/handler"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/middleware"
+	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
 )
 
@@ -41,7 +42,7 @@ func NewUserProvider(svc user.Service) content.UserProvider {
 }
 
 // NewEngine 组装 Gin 引擎与全部路由。
-func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service) *gin.Engine {
+func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service, uploadSvc upload.Service) *gin.Engine {
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -52,8 +53,15 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 	ch := handler.NewContentHandler(contentSvc)
 	fh := handler.NewFollowHandler(userSvc, contentSvc)
 	ph := handler.NewProfileHandler(userSvc, contentSvc)
+	upl := handler.NewUploadHandler(uploadSvc)
 
 	r.GET("/healthz", handler.Health)
+
+	// 开发环境由 Go 托管 /uploads（#12 D1：生产 nginx 接管，图片 GET 不经 Go；
+	// 目录由 Store 首次上传时自动创建，此前请求 404 属预期）
+	if cfg.Env != "production" && cfg.UploadsDir != "" {
+		r.Static("/uploads", cfg.UploadsDir)
+	}
 
 	api := r.Group("/api/v1")
 	{
@@ -88,6 +96,9 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		authed.DELETE("/favorites", ch.Unfavorite)
 		authed.POST("/follows", fh.Follow)
 		authed.DELETE("/follows", fh.Unfollow)
+
+		// 图片上传（#12：需登录；无 DB，图片 GET 由 nginx/开发态 Go 托管）
+		authed.POST("/uploads", upl.Upload)
 
 		// 管理操作（moderator+，双保险：#9 §5.0）
 		mod := authed.Group("")
