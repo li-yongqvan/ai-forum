@@ -1,7 +1,7 @@
 # Handoff · 前端产物自动部署进 CI（阻断项 2）
 
 > ticket：[#14](https://github.com/li-yongqvan/ai-forum/issues/14)（2026-08-18 建票）
-> 状态：本会话（2026-08-18）实现中
+> 状态：已解决（2026-08-18 实现完成：deploy.yml 前端构建 + scp 上传 + deployment.md 同步 + actionlint/前端 build 校验通过；PR [#15](https://github.com/li-yongqvan/ai-forum/pull/15) 待合 main，合入后配 SSH secrets + 服务器 chown 即真实生效）
 
 ---
 
