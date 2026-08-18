@@ -1,0 +1,17 @@
+# Workflow 自身校验（actionlint）——secrets-in-if 事件后补（2026-08-18）
+# 任何分支 push 都跑，在 feature 分支就拦截无效 workflow（曾 4 次 0 秒失败都在 feat 分支）
+# 阻塞：校验失败 run 变红（区别于 golangci-lint 的非阻塞风格检查）
+name: Workflow Lint
+
+on:
+  push:
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint workflow files
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
