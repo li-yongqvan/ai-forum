@@ -21,7 +21,9 @@
 
 ## 活跃 ticket
 
-暂无活跃 ticket。
+| # | Ticket | 状态 | 文档 |
+|---|---|---|---|
+| #12 | [图片上传（MVP 本地上传）](https://github.com/li-yongqvan/ai-forum/issues/12) | 已挂地图 #1 frontier，待实现 | [issue-12-image-upload-decisions.md](grilling-decisions/issue-12-image-upload-decisions.md) |
 
 ## 已解决
 
