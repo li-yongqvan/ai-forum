@@ -1,7 +1,7 @@
 # Handoff · 前端产物自动部署进 CI（阻断项 2）
 
-> ticket：**未建**（2026-08-18 决定先出文档；接手前建议建 issue 编号并按惯例改名 `<编号>-frontend-ci-deploy.md`）
-> 状态：待新会话接手实现
+> ticket：[#14](https://github.com/li-yongqvan/ai-forum/issues/14)（2026-08-18 建票）
+> 状态：本会话（2026-08-18）实现中
 
 ---
 

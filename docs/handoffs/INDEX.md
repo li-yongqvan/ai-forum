@@ -21,11 +21,9 @@
 
 ## 活跃 ticket
 
-> 编号未定：前端部署任务未建 issue，先出 handoff 文档；接手前建议建 issue 编号并按惯例改名 `<编号>-frontend-ci-deploy.md`。
-
 | # | Ticket | handoff 文档 | 状态 |
 |---|---|---|---|
-| 待定 | 前端产物自动部署进 CI（阻断项 2） | [frontend-ci-deploy.md](frontend-ci-deploy.md) | 待新会话接手实现 |
+| #14 | [前端产物自动部署进 CI（阻断项 2）](https://github.com/li-yongqvan/ai-forum/issues/14) | [14-frontend-ci-deploy.md](14-frontend-ci-deploy.md) | 本会话（2026-08-18）实现中 |
 
 ## 已解决
 
