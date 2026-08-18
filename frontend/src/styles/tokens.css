@@ -1,0 +1,60 @@
+/* ============ 双主题 token（IA v2 §1.2，移植自已采纳原型） ============ */
+:root {
+  --bg: #f6f4ef;
+  --surface: #ffffff;
+  --surface-2: #efece4;
+  --surface-3: #e7e3d9;
+  --ink: #1b2434;
+  --ink-2: #57606e;
+  --ink-3: #828c9b;
+  --line: #e4e0d6;
+  --brand: #1f3a5f;
+  --brand-2: #2b5fa8;
+  --brand-soft: #e4ecf5;
+  --accent: #e8a33d;
+  --accent-strong: #c07a10;
+  --accent-soft: #fbf0dc;
+  --accent-ink: #6b4309;
+  --danger: #d64541;
+  --success: #2f7d50;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #12161d;
+    --surface: #1a2029;
+    --surface-2: #212936;
+    --surface-3: #293343;
+    --ink: #e9ecf2;
+    --ink-2: #a6b0c0;
+    --ink-3: #78839a;
+    --line: #333e4f;
+    --brand: #5b8dcc;
+    --brand-2: #7fa8dc;
+    --brand-soft: #22334a;
+    --accent: #e8a33d;
+    --accent-strong: #e8a33d;
+    --accent-soft: #3a2c14;
+    --accent-ink: #f0c886;
+    --danger: #e3655f;
+    --success: #4ca075;
+  }
+}
+:root[data-theme='dark'] {
+  --bg: #12161d;
+  --surface: #1a2029;
+  --surface-2: #212936;
+  --surface-3: #293343;
+  --ink: #e9ecf2;
+  --ink-2: #a6b0c0;
+  --ink-3: #78839a;
+  --line: #333e4f;
+  --brand: #5b8dcc;
+  --brand-2: #7fa8dc;
+  --brand-soft: #22334a;
+  --accent: #e8a33d;
+  --accent-strong: #e8a33d;
+  --accent-soft: #3a2c14;
+  --accent-ink: #f0c886;
+  --danger: #e3655f;
+  --success: #4ca075;
+}

@@ -1,0 +1,119 @@
+/* ============ 基础（移动端优先：safe-area、触控 ≥44px、不横向滚动） ============ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  font-family: 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', 'Noto Sans CJK SC',
+    -apple-system, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+#app {
+  max-width: 430px;
+  margin: 0 auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  position: relative;
+  overflow-x: hidden;
+}
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+input,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+svg {
+  display: block;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+/* 可点目标 ≥44px（IA §6.5） */
+.tap,
+button,
+[role='button'] {
+  min-height: 44px;
+  min-width: 44px;
+}
+/* 页面路由过渡 */
+.page {
+  animation: pageIn 0.24s ease;
+}
+@keyframes pageIn {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Markdown 渲染（IA §5.2；v-html 内容，需全局样式） */
+.md {
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--ink);
+  word-break: break-word;
+}
+.md p {
+  margin: 0 0 10px;
+}
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.md pre {
+  background: #1b2434;
+  color: #e6edf7;
+  border-radius: 14px;
+  padding: 14px;
+  margin: 10px 0;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+.md a {
+  color: var(--brand-2);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--brand-2);
+}
+.md strong {
+  font-weight: 700;
+}
+.md img {
+  max-width: 100%;
+  border-radius: 12px;
+  margin: 6px 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
