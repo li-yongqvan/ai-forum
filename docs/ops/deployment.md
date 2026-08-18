@@ -16,7 +16,7 @@
 | 后端 | Go + Gin 单进程容器，监听 `:8080` |
 | 数据库 | PostgreSQL 16 容器，数据卷持久化到宿主机 |
 | 缓存/消息队列 | **不引入 Redis / RabbitMQ / Kafka**，异步用进程内 goroutine |
-| CI/CD | GitHub Actions SSH 直连服务器，执行 `docker compose pull && up -d` |
+| CI/CD | GitHub Actions：构建 API 镜像推 GHCR + 构建前端并 scp 到 `/var/www/ai-forum`；SSH 直连执行 `docker compose pull && up -d` |
 | 备份 | 宿主机 cron 每日 `pg_dump` |
 | 日志 | stdout/stderr + Docker `json-file` |
 | 监控 | `/healthz` + 免费外部 uptime 监控或 cron curl |
@@ -247,11 +247,10 @@ chmod +x /opt/ai-forum/backup.sh
    docker compose up -d api
    ```
 
-6. 部署前端静态文件到 nginx root：
+6. 准备前端静态目录（此后前端产物由 CI 自动 scp 上传，见 §5.1；scp 无 sudo，需一次性 chown 给部署用户）：
    ```bash
-   # 假设前端构建产物在仓库 frontend/dist
    sudo mkdir -p /var/www/ai-forum
-   sudo cp -r frontend/dist/* /var/www/ai-forum/
+   sudo chown $USER:$USER /var/www/ai-forum
    ```
 
 7. 验证：
@@ -274,26 +273,66 @@ on:
     branches: [main]
 
 jobs:
-  build-and-deploy:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+      - name: Test
+        working-directory: backend
+        run: go test ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true # 非阻塞
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: backend
+
+  deploy:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    env: # secrets 不能进 if，先落到 job 级 env，step 的 if 判 env（见 docs/impl/testing.md §4.1）
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
+      # 前端：始终构建（main 上的构建验证），上传步按 SSH secrets 门控
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # Vite 8.2 engines 要求 ^20.19.0 || >=22.12.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push API image
         uses: docker/build-push-action@v5
         with:
@@ -304,13 +343,23 @@ jobs:
             ghcr.io/li-yongqvan/ai-forum-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
+      - name: Upload frontend to server
+        if: env.SSH_HOST != ''
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          source: frontend/dist/*
+          target: /var/www/ai-forum
+          strip_components: 2 # 去掉 frontend/dist 前缀，dist 内容直落 web root
       - name: Deploy to server
+        if: env.SSH_HOST != ''
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             set -e
             cd /opt/ai-forum
@@ -318,9 +367,12 @@ jobs:
             docker compose pull api
             docker compose up -d api
             docker compose ps
-            # 可选：重新部署前端静态文件
-            sudo cp -r frontend/dist/* /var/www/ai-forum/
 ```
+
+> 前端自动部署说明（#14）：
+> - 前端在 deploy job **始终构建**（npm ci + build，免费获得 main 上的构建验证）；仅 **scp 上传步**按 `if: env.SSH_HOST != ''` 门控——未配 SSH secrets 时前端照常构建、上传/部署步跳过，run 不红。
+> - scp 直传 `/var/www/ai-forum` **无 sudo**，需服务器初始化一次性 `chown`（见 §4 step 6）。
+> - 旧哈希文件暂不清理（scp 只增改不删；Vite 产物按内容哈希命名，留存仅占磁盘，MVP 可接受）。
 
 ### 5.2 需要提前配置的 GitHub Secrets
 

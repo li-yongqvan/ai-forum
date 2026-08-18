@@ -21,12 +21,13 @@
 
 ## 活跃 ticket
 
-> 当前无活跃 ticket（全部决策已定案，进入实现/验收阶段）。
+> 当前无待接手 ticket（#14 已在本会话实现，见「已解决」）。
 
 ## 已解决
 
 | # | Ticket | 解决时间 | 结论摘要 |
 |---|---|---|---|
+| #14 | [前端产物自动部署进 CI（阻断项 2）](https://github.com/li-yongqvan/ai-forum/issues/14) | 2026-08-18 | deploy job 新增前端构建（Node 22 + npm ci + build，**始终**，作 main 构建验证）+ **scp-action 直传 `/var/www/ai-forum`**（`if: env.SSH_HOST != ''` 门控，`strip_components: 2`）；未配 secrets 时前端照常构建、上传/部署步跳过、run 不红；deployment.md §4 step 6 改 chown 前置、§5.1 同步真实 3-job CI。actionlint + 前端 build 校验通过。分支 `feat/frontend-ci-deploy`，PR #15 待合 main（合入后配 SSH secrets + 服务器 `chown /var/www/ai-forum` 即真实生效）。另随分支补齐此前滞留未合 main 的 actionlint 基建。详见 [issue #14](https://github.com/li-yongqvan/ai-forum/issues/14) |
 | #12 | [图片上传（MVP 本地上传）](https://github.com/li-yongqvan/ai-forum/issues/12) | 2026-08-18 | 方案 A 本地上传闭环：后端 `POST /api/v1/uploads`（登录态，双校验/UUID 文件名/5MB）+ 新包 `backend/upload`；前端发帖/评论图片选择器 + 光标插入 + md 渲染；生产 nginx 托管 `/uploads`、开发 Go 静态。IA §7 升级「本地上传+外链」。`go test`/Vitest/Playwright 冒烟全过。分支 `feat/image-upload`。决策见 [issue-12-image-upload-decisions.md](grilling-decisions/issue-12-image-upload-decisions.md)，详见 [issue #12 resolution](https://github.com/li-yongqvan/ai-forum/issues/12#issuecomment-5324989160) |
 | #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | 2026-08-18 | 单服务器 Docker Compose all-in-one；复用现有 nginx（目标服务器已预装，作为 #2 Caddy 推荐的条件分支）；PostgreSQL 容器化；无 Redis/消息队列；GitHub Actions SSH 直连部署；宿主机 cron pg_dump 备份；stdout + Docker json-file 日志；`/healthz` + 外部 uptime 监控；MVP 纯 HTTP on IP。产出 `docs/ops/deployment.md`，详见 issue #8 resolution comment |
 

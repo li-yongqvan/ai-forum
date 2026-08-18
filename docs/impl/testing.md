@@ -78,7 +78,36 @@ MVP 测试以「保护核心行为不被破坏」为核心，不求 100% 覆盖�
   3. `npm ci && npm run test:unit`（Vitest）建议通过。
   4. 部署 gate：以上通过后，才 SSH 到服务器执行 `docker compose pull && up -d`。
 - **golangci-lint 作为非阻塞检查加入 CI**（已确认）：与测试并行跑，失败不阻断部署，仅提示。
+- **actionlint 作为阻塞检查加入 CI**（已确认）：独立 workflow（`workflow-lint.yml`），任何分支 push 都跑；workflow 无效 = CI 瘫痪，故阻塞（区别于 golangci-lint 的非阻塞风格检查）。
 - E2E 不加入 MVP 阶段的 CI（避免拖慢），但保留 `e2e/` 目录供本地跑。
+
+### 4.1 Workflow 自身校验（actionlint）
+
+**规则：`secrets` 上下文永不进 `if` 条件——job 级与 step 级皆禁**。GitHub 上下文可用性表对 `jobs.<job_id>.if` 与 `jobs.<job_id>.steps[*].if` 均不含 `secrets`；引用会导致 workflow 解析失败、run 0 秒报错、run 名退化为文件路径、`on:` 分支过滤失效（2026-08-18 deploy.yml 曾因此 4 次 CI 0 秒失败）。
+
+要按 secrets 分支（如「未配 SSH secrets 时跳过部署步」），一律三段式：
+
+```yaml
+jobs:
+  deploy:
+    env:                              # ① secrets → job 级 env（secrets 允许用于 env）
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+    steps:
+      - name: Deploy
+        if: env.SSH_HOST != ''        # ② step if 判 env（env 在 step-if 白名单内）
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.SSH_HOST }}   # ③ 消费 job env，而非直接 secrets
+```
+
+`if` 条件上下文白名单（GitHub 官方 contexts 文档）：
+
+| 位置 | 允许的上下文 |
+|---|---|
+| `jobs.<job_id>.if` | `github, needs, vars, inputs` |
+| `jobs.<job_id>.steps[*].if` | `github, needs, strategy, matrix, job, runner, env, vars, steps, inputs` |
+
+本地校验：`bash scripts/check-workflows.sh`（Docker 镜像 `rhysd/actionlint:1.7.12`，与 CI 同版本，判定一致）。
 
 ## 5. 测试数据
 
@@ -101,5 +130,7 @@ MVP 测试以「保护核心行为不被破坏」为核心，不求 100% 覆盖�
 | 前端 E2E 工具 | **Playwright** |
 | E2E 加入 MVP CI | **否**（保留 `e2e/` 目录本地跑） |
 | golangci-lint | **加入 CI，非阻塞**（并行跑，失败不阻断部署） |
+| actionlint | **加入 CI，阻塞**（独立 workflow，任何分支 push 跑；workflow 无效 = CI 瘫痪） |
+| secrets 进 if | **禁止（job/step 皆然）**；按 secrets 分支一律 secrets → job env → step if 用 env |
 
 以上决策由用户于 2026-08-18 确认/采纳；实现阶段以本文件为准。待确认清单已清空。
