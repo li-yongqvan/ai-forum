@@ -1,7 +1,8 @@
 # CI/CD（#8 §5.1 + testing.md 确认项）
 # - test：go build + go test 必须通过（集成测试用 testcontainers，ubuntu-latest 自带 Docker）
 # - lint：golangci-lint 非阻塞（失败不阻断部署，仅提示）
-# - deploy：SSH 直连服务器 docker compose pull && up -d；未配置 SSH secrets 时跳过，不报失败
+# - deploy：前端 npm ci + build（始终，作构建验证）+ scp 上传 /var/www/ai-forum（门控）；
+#           后端构建推送 GHCR + SSH 直连 docker compose pull && up -d；未配置 SSH secrets 时跳过上传/部署步，run 不红
 
 name: Build and Deploy
 
@@ -50,6 +51,19 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
+      # 前端（#14）：始终构建，作 main 上的构建验证；上传步按 SSH secrets 门控（与 API 镜像 always-push + gated-deploy 一致）
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # Vite 8.2 engines 要求 ^20.19.0 || >=22.12.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
@@ -68,6 +82,18 @@ jobs:
             ghcr.io/li-yongqvan/ai-forum-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Upload frontend to server
+        # scp 直传 nginx 静态根（#14 决策 2：服务器初始化已 chown /var/www/ai-forum，scp 无 sudo）
+        # strip_components: 2 去掉 frontend/dist 前缀，dist 内容直落 web root
+        if: env.SSH_HOST != ''
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          source: frontend/dist/*
+          target: /var/www/ai-forum
+          strip_components: 2
       - name: Deploy to server
         # 未配 SSH secrets 时仅跳过部署步；镜像仍正常推 GHCR
         if: env.SSH_HOST != ''
