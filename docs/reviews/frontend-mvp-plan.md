@@ -143,7 +143,10 @@ frontend/
 2. `npm run test:unit`（Vitest）—— md 渲染器（含 XSS 转义、协议白名单）、格式化、auth/theme store
 3. **Playwright 本地冒烟**（连运行中的后端）：注册 → feed 可见种子帖 → 发帖 → 帖子详情 → 评论 → 点赞 → 关注 → 关注流出现；**点赞/收藏/关注后刷新页面，状态保持（验证 viewer 字段）**；**moderator 账号置顶/删帖各一次**
 4. 手动：双主题切换三态（**含游客态主题切换**）、登录墙（游客点发帖 → /login?returnTo= 回跳；**returnTo 外部地址被拒**）、发帖草稿恢复、PWA 可安装
-5. **真机走查（iOS Safari 重点）**：安全区与 ≥44px 触控目标、添加到主屏（apple-touch-icon 生效）、主屏 PWA 与 Safari 登录态独立已知晓、断网后 app shell 可打开（预缓存生效）
+5. **真机走查（Android 优先；环境无 iOS，2026-08-18 调整）**：
+   - **Android（OnePlus Ace 5 / Chrome）**：安全区与 ≥44px 触控目标、双主题三态（含游客）、登录墙（returnTo 回跳/站外被拒）、草稿恢复、断网 app shell 可打开、核心循环手测
+   - **PWA 安装项延后**：Chrome 仅对 HTTPS/localhost 提供安装，LAN HTTP 与线上 `http://122.51.233.225/` 均为纯 HTTP（#8 已知债）——安装验证待上域名+HTTPS
+   - **iOS 专属项待有设备后补**：apple-touch-icon 生效、主屏 PWA 与 Safari localStorage 独立、iOS safe-area；代码已按规范实现（`apple-touch-icon-180x180.png`、`env(safe-area-inset)`）
 6. 后端小改回归：`go test ./...` + live curl
 
 ## 6. 工作量估算（WBS）
