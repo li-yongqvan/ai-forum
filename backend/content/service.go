@@ -18,7 +18,7 @@ type CreatePostCmd struct {
 	Content  string
 }
 
-// PostView 帖子读模型（含计数与展示名；IsLiked/IsFaved 依查看者身份）。
+// PostView 帖子读模型（含计数与展示名；viewer 字段提供赞/藏/关注初始态，v2 评审定稿形态）。
 type PostView struct {
 	ID            int64     `json:"id"`
 	BoardID       int64     `json:"board_id"`
@@ -36,9 +36,20 @@ type PostView struct {
 	LikeCount     int       `json:"like_count"`
 	CommentCount  int       `json:"comment_count"`
 	FavoriteCount int       `json:"favorite_count"`
-	IsLiked       bool      `json:"is_liked"`
-	IsFaved       bool      `json:"is_faved"`
+	Viewer        *PostViewer `json:"viewer,omitempty"` // 仅登录态附（含 liked/favorited/following_author）
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// PostViewer 登录态查看者对帖子的操作状态（前端渲染按钮初始态，避免逐项补请求）。
+type PostViewer struct {
+	Liked           bool `json:"liked"`
+	Favorited       bool `json:"favorited"`
+	FollowingAuthor bool `json:"following_author"`
+}
+
+// FollowViewer 板块/话题/用户粒度的关注初始态。
+type FollowViewer struct {
+	Following bool `json:"following"`
 }
 
 type CreateCommentCmd struct {
@@ -92,6 +103,7 @@ type ToggleCmd struct {
 type ListFeedQuery struct {
 	Tab      string // all | follow
 	ViewerID int64  // 0 = 游客
+	AuthorID *int64 // 按作者过滤（用户主页/我的帖子）
 	BoardID  *int64
 	TopicID  *int64
 	Page     int
@@ -114,15 +126,17 @@ type FollowTopicCmd struct {
 }
 
 type BoardView struct {
-	ID          int64   `json:"id"`
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
+	ID          int64         `json:"id"`
+	Name        string        `json:"name"`
+	Description *string       `json:"description"`
+	Viewer      *FollowViewer `json:"viewer,omitempty"`
 }
 
 type TopicView struct {
-	ID      int64  `json:"id"`
-	BoardID int64  `json:"board_id"`
-	Name    string `json:"name"`
+	ID      int64         `json:"id"`
+	BoardID int64         `json:"board_id"`
+	Name    string        `json:"name"`
+	Viewer  *FollowViewer `json:"viewer,omitempty"`
 }
 
 type CommentTreeView struct {
@@ -167,6 +181,7 @@ type UserView struct {
 type UserProvider interface {
 	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
 	GetUserView(ctx context.Context, id int64) (UserView, error)
+	FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error)
 }
 
 // Service 是内容域的对外接口。权限校验在命令内（#9 §5.0：接口独立鉴权，前端可见性只是体验层）。
@@ -181,8 +196,9 @@ type Service interface {
 	GetPost(ctx context.Context, in GetPostQuery) (PostView, error)
 	ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error)
 	GetCommentTree(ctx context.Context, postID int64) (CommentTreeView, error)
-	ListBoards(ctx context.Context) ([]BoardView, error)
-	ListTopics(ctx context.Context, boardID *int64) ([]TopicView, error)
+	ListBoards(ctx context.Context, viewerID int64) ([]BoardView, error)
+	ListTopics(ctx context.Context, viewerID int64, boardID *int64) ([]TopicView, error)
+	CountPostsByAuthor(ctx context.Context, authorID int64) (int, error)
 
 	DeletePost(ctx context.Context, in DeletePostCmd) error
 	DeleteComment(ctx context.Context, in DeleteCommentCmd) error
@@ -433,7 +449,7 @@ func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, e
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	q := PostQuery{BoardID: in.BoardID, TopicID: in.TopicID, Offset: (page - 1) * pageSize, Limit: pageSize}
+	q := PostQuery{AuthorID: in.AuthorID, BoardID: in.BoardID, TopicID: in.TopicID, Offset: (page - 1) * pageSize, Limit: pageSize}
 
 	switch in.Tab {
 	case "", "all":
@@ -538,30 +554,51 @@ func floorLess(a, b *Comment) bool {
 	return *a.Floor < *b.Floor
 }
 
-// ListBoards 返回板块列表（按 sort_order 升序）。
-func (s *service) ListBoards(ctx context.Context) ([]BoardView, error) {
+// ListBoards 返回板块列表（按 sort_order 升序）；登录态附 viewer.following。
+func (s *service) ListBoards(ctx context.Context, viewerID int64) ([]BoardView, error) {
 	boards, err := s.repo.ListBoards(ctx)
 	if err != nil {
 		return nil, err
 	}
 	views := make([]BoardView, 0, len(boards))
 	for _, b := range boards {
-		views = append(views, BoardView{ID: b.ID, Name: b.Name, Description: b.Description})
+		v := BoardView{ID: b.ID, Name: b.Name, Description: b.Description}
+		if viewerID != 0 {
+			following, err := s.repo.FollowBoardExists(ctx, viewerID, b.ID)
+			if err != nil {
+				return nil, err
+			}
+			v.Viewer = &FollowViewer{Following: following}
+		}
+		views = append(views, v)
 	}
 	return views, nil
 }
 
-// ListTopics 返回话题列表；boardID 非空时按板块过滤。
-func (s *service) ListTopics(ctx context.Context, boardID *int64) ([]TopicView, error) {
+// ListTopics 返回话题列表；boardID 非空时按板块过滤；登录态附 viewer.following。
+func (s *service) ListTopics(ctx context.Context, viewerID int64, boardID *int64) ([]TopicView, error) {
 	topics, err := s.repo.ListTopics(ctx, boardID)
 	if err != nil {
 		return nil, err
 	}
 	views := make([]TopicView, 0, len(topics))
 	for _, t := range topics {
-		views = append(views, TopicView{ID: t.ID, BoardID: t.BoardID, Name: t.Name})
+		v := TopicView{ID: t.ID, BoardID: t.BoardID, Name: t.Name}
+		if viewerID != 0 {
+			following, err := s.repo.FollowTopicExists(ctx, viewerID, t.ID)
+			if err != nil {
+				return nil, err
+			}
+			v.Viewer = &FollowViewer{Following: following}
+		}
+		views = append(views, v)
 	}
 	return views, nil
+}
+
+// CountPostsByAuthor 返回某作者的帖子数（未删除，供用户主页资料卡）。
+func (s *service) CountPostsByAuthor(ctx context.Context, authorID int64) (int, error) {
+	return s.repo.CountPostsByAuthor(ctx, authorID)
 }
 
 // ---- 读模型组装 ----
@@ -653,8 +690,6 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 			LikeCount:     likeCnt[p.ID],
 			CommentCount:  commentCnt[p.ID],
 			FavoriteCount: favCnt[p.ID],
-			IsLiked:       liked[p.ID],
-			IsFaved:       faved[p.ID],
 			CreatedAt:     p.CreatedAt,
 		}
 		if p.TopicID != nil {
@@ -664,6 +699,14 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 		}
 		if view.AuthorName == "" {
 			view.AuthorName = "已注销"
+		}
+		// 登录态附 viewer（赞/藏/关注作者初始态）
+		if viewerID != 0 {
+			following, err := s.users.FollowsUser(ctx, viewerID, p.AuthorID)
+			if err != nil {
+				return nil, err
+			}
+			view.Viewer = &PostViewer{Liked: liked[p.ID], Favorited: faved[p.ID], FollowingAuthor: following}
 		}
 		views = append(views, view)
 	}

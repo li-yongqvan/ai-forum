@@ -271,6 +271,67 @@ func TestFollowedUserIDs(t *testing.T) {
 	}
 }
 
+func TestFollowsUser(t *testing.T) {
+	f := newFakeRepo()
+	alice := f.seedUser("alice", "a@x.edu", "secret123")
+	bob := f.seedUser("bob", "b@x.edu", "secret123")
+	f.follows[[2]int64{alice.ID, bob.ID}] = true
+	svc := newService(f)
+
+	if ok, err := svc.FollowsUser(context.Background(), alice.ID, bob.ID); err != nil || !ok {
+		t.Errorf("已关注应 true, ok=%v err=%v", ok, err)
+	}
+	if ok, _ := svc.FollowsUser(context.Background(), bob.ID, alice.ID); ok {
+		t.Error("未关注应 false")
+	}
+}
+
+func TestPublicProfile(t *testing.T) {
+	t.Run("资料与计数", func(t *testing.T) {
+		f := newFakeRepo()
+		alice := f.seedUser("alice", "a@x.edu", "secret123")
+		bob := f.seedUser("bob", "b@x.edu", "secret123")
+		carol := f.seedUser("carol", "c@x.edu", "secret123")
+		f.follows[[2]int64{bob.ID, alice.ID}] = true // bob 关注 alice
+		f.follows[[2]int64{carol.ID, alice.ID}] = true
+		f.follows[[2]int64{alice.ID, bob.ID}] = true // alice 关注 bob
+		svc := newService(f)
+
+		p, err := svc.PublicProfile(context.Background(), PublicProfileCmd{TargetID: alice.ID, ViewerID: bob.ID})
+		if err != nil {
+			t.Fatalf("PublicProfile() error = %v", err)
+		}
+		if p.Username != "alice" || p.FollowerCount != 2 || p.FollowingCount != 1 {
+			t.Errorf("profile = %+v, want followers=2 following=1", p)
+		}
+		if !p.Following {
+			t.Error("bob 视角 Following 应为 true")
+		}
+	})
+
+	t.Run("游客不附 Following", func(t *testing.T) {
+		f := newFakeRepo()
+		alice := f.seedUser("alice", "a@x.edu", "secret123")
+		svc := newService(f)
+		p, err := svc.PublicProfile(context.Background(), PublicProfileCmd{TargetID: alice.ID, ViewerID: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Following {
+			t.Error("游客 Following 应为 false")
+		}
+	})
+
+	t.Run("不存在 → ErrNotFound", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		_, err := svc.PublicProfile(context.Background(), PublicProfileCmd{TargetID: 999})
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+}
+
 func TestBan(t *testing.T) {
 	t.Run("成功", func(t *testing.T) {
 		f := newFakeRepo()

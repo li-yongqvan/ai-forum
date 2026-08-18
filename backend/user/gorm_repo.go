@@ -112,6 +112,18 @@ func (r *gormRepo) ListFollowedUserIDs(ctx context.Context, followerID int64) ([
 	return ids, err
 }
 
+func (r *gormRepo) CountFollowers(ctx context.Context, targetID int64) (int, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&FollowUser{}).Where("target_id = ?", targetID).Count(&n).Error
+	return int(n), err
+}
+
+func (r *gormRepo) CountFollowing(ctx context.Context, followerID int64) (int, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&FollowUser{}).Where("follower_id = ?", followerID).Count(&n).Error
+	return int(n), err
+}
+
 func mapNotFound(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound

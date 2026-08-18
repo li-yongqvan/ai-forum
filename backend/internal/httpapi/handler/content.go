@@ -63,7 +63,7 @@ func pathID(c *gin.Context) (int64, bool) {
 
 // ListBoards GET /api/v1/boards
 func (h *ContentHandler) ListBoards(c *gin.Context) {
-	views, err := h.svc.ListBoards(c.Request.Context())
+	views, err := h.svc.ListBoards(c.Request.Context(), viewerID(c))
 	if err != nil {
 		respondContentError(c, err)
 		return
@@ -82,7 +82,7 @@ func (h *ContentHandler) ListTopics(c *gin.Context) {
 		}
 		boardID = &id
 	}
-	views, err := h.svc.ListTopics(c.Request.Context(), boardID)
+	views, err := h.svc.ListTopics(c.Request.Context(), viewerID(c), boardID)
 	if err != nil {
 		respondContentError(c, err)
 		return
@@ -92,7 +92,7 @@ func (h *ContentHandler) ListTopics(c *gin.Context) {
 
 // ---- 帖子 ----
 
-// ListPosts GET /api/v1/posts（信息流/板块/话题过滤）
+// ListPosts GET /api/v1/posts（信息流/板块/话题/作者过滤）
 func (h *ContentHandler) ListPosts(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -101,6 +101,11 @@ func (h *ContentHandler) ListPosts(c *gin.Context) {
 		ViewerID: viewerID(c),
 		Page:     page,
 		PageSize: pageSize,
+	}
+	if v := c.Query("author_id"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			q.AuthorID = &id
+		}
 	}
 	if v := c.Query("board_id"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {

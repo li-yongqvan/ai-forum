@@ -2,9 +2,10 @@ package content
 
 import "context"
 
-// PostQuery 列表查询参数（feed / 板块 / 话题复用，分页统一 limit/offset）。
+// PostQuery 列表查询参数（feed / 板块 / 话题 / 作者 复用，分页统一 limit/offset）。
 type PostQuery struct {
 	Feed             string // all | follow
+	AuthorID         *int64
 	BoardID          *int64
 	TopicID          *int64
 	FollowedUserIDs  []int64 // follow 流：关注的用户
@@ -26,6 +27,7 @@ type Repo interface {
 	CreatePost(ctx context.Context, p *Post) error
 	GetPostByID(ctx context.Context, id int64) (*Post, error)
 	ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
+	CountPostsByAuthor(ctx context.Context, authorID int64) (int, error)
 	DeletePost(ctx context.Context, id int64) error // 软删
 	UpdatePostPinned(ctx context.Context, id int64, pinned bool) error
 	UpdatePostFeatured(ctx context.Context, id int64, featured bool) error

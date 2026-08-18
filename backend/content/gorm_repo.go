@@ -80,9 +80,12 @@ func (r *gormRepo) GetPostByID(ctx context.Context, id int64) (*Post, error) {
 	return &p, nil
 }
 
-// ListPosts 信息流/板块/话题列表查询。排序：#9 §5.2「置顶优先 + 时间倒序」（无 pinned_at 列，置顶帖按创建时间排序）。
+// ListPosts 信息流/板块/话题/作者列表查询。排序：#9 §5.2「置顶优先 + 时间倒序」（无 pinned_at 列，置顶帖按创建时间排序）。
 func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
 	q := r.db.WithContext(ctx).Model(&Post{})
+	if in.AuthorID != nil {
+		q = q.Where("author_id = ?", *in.AuthorID)
+	}
 	if in.BoardID != nil {
 		q = q.Where("board_id = ?", *in.BoardID)
 	}
@@ -110,6 +113,12 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 
 func (r *gormRepo) DeletePost(ctx context.Context, id int64) error {
 	return r.db.WithContext(ctx).Delete(&Post{}, id).Error // 软删
+}
+
+func (r *gormRepo) CountPostsByAuthor(ctx context.Context, authorID int64) (int, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&Post{}).Where("author_id = ?", authorID).Count(&n).Error
+	return int(n), err
 }
 
 func (r *gormRepo) UpdatePostPinned(ctx context.Context, id int64, pinned bool) error {

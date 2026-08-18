@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -82,6 +83,28 @@ type Service interface {
 	GetUser(ctx context.Context, id int64) (UserView, error)
 	// FollowedUserIDs 返回某用户关注的用户 id 列表（供 content 构造关注流，#4 进程内调用）。
 	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
+	// FollowsUser 判断 followerID 是否已关注 targetID（供 content 构造 viewer.following_author）。
+	FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error)
+	// PublicProfile 返回用户公开资料（不含邮箱/角色等隐私字段）。
+	PublicProfile(ctx context.Context, in PublicProfileCmd) (PublicProfileView, error)
+}
+
+// PublicProfileCmd 公开资料查询。
+type PublicProfileCmd struct {
+	TargetID int64
+	ViewerID int64 // 0 = 游客（不附 Following）
+}
+
+// PublicProfileView 公开资料读模型。
+type PublicProfileView struct {
+	ID             int64
+	Username       string
+	AvatarURL      *string
+	Bio            *string
+	CreatedAt      time.Time
+	Following      bool
+	FollowerCount  int
+	FollowingCount int
 }
 
 // ---- 实现 ----
@@ -200,6 +223,44 @@ func (s *service) Unfollow(ctx context.Context, in FollowCmd) error {
 // FollowedUserIDs 返回关注的用户 id 列表。
 func (s *service) FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error) {
 	return s.repo.ListFollowedUserIDs(ctx, userID)
+}
+
+// FollowsUser 判断是否已关注目标用户。
+func (s *service) FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error) {
+	return s.repo.FollowExists(ctx, followerID, targetID)
+}
+
+// PublicProfile 返回公开资料与计数（粉丝数/关注数）；ViewerID 非 0 时附 Following。
+func (s *service) PublicProfile(ctx context.Context, in PublicProfileCmd) (PublicProfileView, error) {
+	u, err := s.repo.GetUserByID(ctx, in.TargetID)
+	if err != nil {
+		return PublicProfileView{}, err
+	}
+	followers, err := s.repo.CountFollowers(ctx, in.TargetID)
+	if err != nil {
+		return PublicProfileView{}, err
+	}
+	following, err := s.repo.CountFollowing(ctx, in.TargetID)
+	if err != nil {
+		return PublicProfileView{}, err
+	}
+	v := PublicProfileView{
+		ID:             u.ID,
+		Username:       u.Username,
+		AvatarURL:      u.AvatarURL,
+		Bio:            u.Bio,
+		CreatedAt:      u.CreatedAt,
+		FollowerCount:  followers,
+		FollowingCount: following,
+	}
+	if in.ViewerID != 0 {
+		f, err := s.repo.FollowExists(ctx, in.ViewerID, in.TargetID)
+		if err != nil {
+			return PublicProfileView{}, err
+		}
+		v.Following = f
+	}
+	return v, nil
 }
 
 // Ban 封禁用户。审计动作（moderation_actions）由 moderation 包在治理闭环中追加。

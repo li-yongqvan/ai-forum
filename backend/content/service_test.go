@@ -188,17 +188,17 @@ func TestGetPost(t *testing.T) {
 	if view.LikeCount != 2 || view.FavoriteCount != 1 {
 		t.Errorf("counts = like %d fav %d, want 2/1", view.LikeCount, view.FavoriteCount)
 	}
-	if !view.IsLiked || !view.IsFaved {
-		t.Errorf("viewer 2 应 is_liked/is_faved 为真")
+	if view.Viewer == nil || !view.Viewer.Liked || !view.Viewer.Favorited {
+		t.Errorf("viewer 2 应 liked/favorited 为真: %+v", view.Viewer)
 	}
 
-	// 游客视角：is_liked/is_faved 恒 false
+	// 游客视角：viewer 不附（nil）
 	guest, err := svc.GetPost(ctx(), GetPostQuery{PostID: 1, ViewerID: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if guest.IsLiked || guest.IsFaved {
-		t.Error("游客 is_liked/is_faved 应为 false")
+	if guest.Viewer != nil {
+		t.Error("游客 viewer 应为 nil")
 	}
 	if guest.ViewCount != 2 {
 		t.Errorf("第二次 GET view_count = %d, want 2", guest.ViewCount)
@@ -471,7 +471,7 @@ func TestFollowBoardTopic(t *testing.T) {
 func TestListBoardsTopics(t *testing.T) {
 	_, svc := newContentService()
 
-	boards, err := svc.ListBoards(ctx())
+	boards, err := svc.ListBoards(ctx(), 0)
 	if err != nil {
 		t.Fatalf("ListBoards() error = %v", err)
 	}
@@ -479,13 +479,29 @@ func TestListBoardsTopics(t *testing.T) {
 		t.Errorf("boards = %+v, want 2 个按 sort_order 排列", boards)
 	}
 
-	all, err := svc.ListTopics(ctx(), nil)
+	all, err := svc.ListTopics(ctx(), 0, nil)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("ListTopics() = %d, err=%v", len(all), err)
 	}
 	boardID := int64(1)
-	filtered, err := svc.ListTopics(ctx(), &boardID)
+	filtered, err := svc.ListTopics(ctx(), 0, &boardID)
 	if err != nil || len(filtered) != 1 || filtered[0].Name != "RAG" {
 		t.Errorf("按板块过滤 = %+v, err=%v", filtered, err)
+	}
+}
+
+func TestCountPostsByAuthor(t *testing.T) {
+	f, svc := newContentService()
+	f.seedPost(1, 1, 1)
+	f.seedPost(2, 1, 1)
+	f.seedPost(3, 2, 1)
+
+	n, err := svc.CountPostsByAuthor(ctx(), 1)
+	if err != nil || n != 2 {
+		t.Errorf("author 1 帖子数 = %d, err=%v, want 2", n, err)
+	}
+	n2, err := svc.CountPostsByAuthor(ctx(), 99)
+	if err != nil || n2 != 0 {
+		t.Errorf("不存在的作者帖子数 = %d, err=%v, want 0", n2, err)
 	}
 }

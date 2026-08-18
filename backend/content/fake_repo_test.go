@@ -138,6 +138,9 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		if p.DeletedAt.Valid {
 			continue
 		}
+		if in.AuthorID != nil && p.AuthorID != *in.AuthorID {
+			continue
+		}
 		if in.BoardID != nil && p.BoardID != *in.BoardID {
 			continue
 		}
@@ -178,6 +181,16 @@ func (f *fakeRepo) DeletePost(ctx context.Context, id int64) error {
 	}
 	p.DeletedAt = gorm.DeletedAt{Valid: true, Time: time.Now()}
 	return nil
+}
+
+func (f *fakeRepo) CountPostsByAuthor(ctx context.Context, authorID int64) (int, error) {
+	n := 0
+	for _, p := range f.posts {
+		if !p.DeletedAt.Valid && p.AuthorID == authorID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *fakeRepo) UpdatePostPinned(ctx context.Context, id int64, pinned bool) error {
@@ -415,6 +428,7 @@ func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 type fakeUsers struct {
 	followed []int64
 	names    map[int64]string
+	follows  map[[2]int64]bool // followerID→targetID 是否关注（默认 false）
 }
 
 func (u fakeUsers) FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error) {
@@ -426,6 +440,10 @@ func (u fakeUsers) GetUserView(ctx context.Context, id int64) (UserView, error) 
 		return UserView{ID: id, Username: n}, nil
 	}
 	return UserView{}, errors.New("fake: 用户不存在")
+}
+
+func (u fakeUsers) FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error) {
+	return u.follows[[2]int64{followerID, targetID}], nil
 }
 
 func newServiceWith(f *fakeRepo, u fakeUsers) Service {

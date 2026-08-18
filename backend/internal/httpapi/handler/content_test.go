@@ -16,13 +16,17 @@ type postView struct {
 	BoardName     string  `json:"board_name"`
 	TopicName     *string `json:"topic_name"`
 	AuthorName    string  `json:"author_name"`
+	AuthorID      int64   `json:"author_id"`
 	ViewCount     int     `json:"view_count"`
 	LikeCount     int     `json:"like_count"`
 	CommentCount  int     `json:"comment_count"`
 	FavoriteCount int     `json:"favorite_count"`
-	IsLiked       bool    `json:"is_liked"`
-	IsFaved       bool    `json:"is_faved"`
-	IsPinned      bool    `json:"is_pinned"`
+	Viewer        *struct {
+		Liked           bool `json:"liked"`
+		Favorited       bool `json:"favorited"`
+		FollowingAuthor bool `json:"following_author"`
+	} `json:"viewer"`
+	IsPinned bool `json:"is_pinned"`
 }
 
 type commentView struct {
@@ -208,8 +212,8 @@ func TestContentFlow(t *testing.T) {
 	w6 := doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/v1/posts/%d", created.ID), nil, token)
 	var liked postView
 	_ = json.Unmarshal(w6.Body.Bytes(), &liked)
-	if !liked.IsLiked || liked.LikeCount != 1 {
-		t.Errorf("点赞后 is_liked = %v, like_count = %d", liked.IsLiked, liked.LikeCount)
+	if liked.Viewer == nil || !liked.Viewer.Liked || liked.LikeCount != 1 {
+		t.Errorf("点赞后 viewer.liked = %+v, like_count = %d", liked.Viewer, liked.LikeCount)
 	}
 	if w := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/likes?target_type=post&target_id=%d", created.ID), nil, token); w.Code != http.StatusOK {
 		t.Errorf("unlike = %d", w.Code)
@@ -291,5 +295,121 @@ func TestContentPermissions(t *testing.T) {
 	p2 := createPost(t, r, alice.Token, 1, "alice 帖2")
 	if w := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/posts/%d", p2.ID), nil, alice.Token); w.Code != http.StatusOK {
 		t.Errorf("作者删帖 = %d, want 200", w.Code)
+	}
+}
+
+// 新后端能力（v2 §4）：author_id 过滤 + viewer 字段（赞/藏/关注作者）。
+func TestAuthorFilterAndViewer(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-V1")
+	bob := registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-V2")
+
+	p1 := createPost(t, r, alice.Token, 1, "alice 帖")
+	p2 := createPost(t, r, bob.Token, 1, "bob 帖")
+
+	// author_id 过滤：只出该作者的帖
+	w := doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/v1/posts?author_id=%d", alice.User.ID), nil, "")
+	var feed listResp
+	if err := json.Unmarshal(w.Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Items) != 1 || feed.Items[0].ID != p1.ID {
+		t.Errorf("author 过滤 = %d 条, want 仅 p1", len(feed.Items))
+	}
+
+	// alice 点赞 p1 + 关注 bob
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p1.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like = %d", w.Code)
+	}
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/follows", map[string]any{"target_type": "user", "target_id": bob.User.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("follow = %d", w.Code)
+	}
+
+	// 列表带 alice token：p1.viewer.liked=true；p2.viewer.following_author=true（关注 bob）
+	w2 := doJSON(t, r, http.MethodGet, "/api/v1/posts", nil, alice.Token)
+	var feed2 listResp
+	if err := json.Unmarshal(w2.Body.Bytes(), &feed2); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range feed2.Items {
+		switch item.ID {
+		case p1.ID:
+			if item.Viewer == nil || !item.Viewer.Liked {
+				t.Errorf("p1 viewer = %+v, want liked=true", item.Viewer)
+			}
+		case p2.ID:
+			if item.Viewer == nil || !item.Viewer.FollowingAuthor {
+				t.Errorf("p2 viewer = %+v, want following_author=true", item.Viewer)
+			}
+		}
+	}
+
+	// 游客列表：viewer 为 nil
+	w3 := doJSON(t, r, http.MethodGet, "/api/v1/posts", nil, "")
+	var feed3 listResp
+	_ = json.Unmarshal(w3.Body.Bytes(), &feed3)
+	for _, item := range feed3.Items {
+		if item.Viewer != nil {
+			t.Errorf("游客列表 viewer 应为 nil, got %+v", item.Viewer)
+		}
+	}
+}
+
+// 新后端能力（v2 §4）：GET /users/:id 公开资料 + viewer.following。
+func TestUserProfileEndpoint(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-U1")
+	bob := registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-U2")
+
+	// bob 关注 alice；alice 发 2 帖
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/follows", map[string]any{"target_type": "user", "target_id": alice.User.ID}, bob.Token); w.Code != http.StatusOK {
+		t.Fatalf("bob follow alice = %d", w.Code)
+	}
+	createPost(t, r, alice.Token, 1, "a1")
+	createPost(t, r, alice.Token, 1, "a2")
+
+	// bob 视角看 alice 主页
+	w := doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/v1/users/%d", alice.User.ID), nil, bob.Token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("profile = %d, body=%s", w.Code, w.Body.String())
+	}
+	var prof struct {
+		Username       string `json:"username"`
+		PostCount      int    `json:"post_count"`
+		FollowerCount  int    `json:"follower_count"`
+		FollowingCount int    `json:"following_count"`
+		Viewer         *struct {
+			Following bool `json:"following"`
+		} `json:"viewer"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &prof); err != nil {
+		t.Fatal(err)
+	}
+	if prof.Username != "alice" || prof.PostCount != 2 || prof.FollowerCount != 1 || prof.FollowingCount != 0 {
+		t.Errorf("profile = %+v, want username=alice posts=2 followers=1 following=0", prof)
+	}
+	if prof.Viewer == nil || !prof.Viewer.Following {
+		t.Errorf("bob 视角 viewer.following 应为 true, got %+v", prof.Viewer)
+	}
+
+	// 游客视角：viewer 为 nil
+	wg := doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/v1/users/%d", alice.User.ID), nil, "")
+	var profG struct {
+		Viewer *struct {
+			Following bool `json:"following"`
+		} `json:"viewer"`
+	}
+	_ = json.Unmarshal(wg.Body.Bytes(), &profG)
+	if profG.Viewer != nil {
+		t.Error("游客 profile viewer 应为 nil")
+	}
+
+	// 不存在 → 404
+	if w := doJSON(t, r, http.MethodGet, "/api/v1/users/9999", nil, ""); w.Code != http.StatusNotFound {
+		t.Errorf("不存在用户 = %d, want 404", w.Code)
 	}
 }

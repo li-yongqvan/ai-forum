@@ -18,6 +18,8 @@ type Repo interface {
 	DeleteFollow(ctx context.Context, followerID, targetID int64) error
 	FollowExists(ctx context.Context, followerID, targetID int64) (bool, error)
 	ListFollowedUserIDs(ctx context.Context, followerID int64) ([]int64, error)
+	CountFollowers(ctx context.Context, targetID int64) (int, error)
+	CountFollowing(ctx context.Context, followerID int64) (int, error)
 
 	// Tx 在单事务内执行 fn，fn 收到事务绑定的 Repo。供跨表原子写（如注册：建用户 + 标记邀请码）。
 	Tx(ctx context.Context, fn func(Repo) error) error

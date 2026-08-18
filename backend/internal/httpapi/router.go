@@ -31,6 +31,10 @@ func (a userProviderAdapter) GetUserView(ctx context.Context, id int64) (content
 	return content.UserView{ID: u.ID, Username: u.Username, AvatarURL: u.AvatarURL}, nil
 }
 
+func (a userProviderAdapter) FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error) {
+	return a.svc.FollowsUser(ctx, followerID, targetID)
+}
+
 // NewUserProvider 构造 content.UserProvider（供 main 装配 content 服务）。
 func NewUserProvider(svc user.Service) content.UserProvider {
 	return userProviderAdapter{svc: svc}
@@ -47,6 +51,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 	uh := handler.NewUserHandler(userSvc)
 	ch := handler.NewContentHandler(contentSvc)
 	fh := handler.NewFollowHandler(userSvc, contentSvc)
+	ph := handler.NewProfileHandler(userSvc, contentSvc)
 
 	r.GET("/healthz", handler.Health)
 
@@ -70,6 +75,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		reads.GET("/posts", ch.ListPosts)
 		reads.GET("/posts/:id", ch.GetPost)
 		reads.GET("/posts/:id/comments", ch.GetComments)
+		reads.GET("/users/:id", ph.GetUserProfile)
 
 		// 内容写入（操作需登录）
 		authed.POST("/posts", ch.CreatePost)
