@@ -35,6 +35,22 @@ func Auth(mgr *auth.Manager) gin.HandlerFunc {
 	}
 }
 
+// OptionalAuth 可选鉴权：有合法 token 则注入身份；无/非法 token 按游客继续（不阻断）。
+// 用于公开读接口（feed/详情/评论树）的个性化——is_liked/is_faved 与关注流需要查看者身份，
+// 但浏览不设登录墙（#9 §4 登录墙：内容开放浏览）。
+func OptionalAuth(mgr *auth.Manager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		token, ok := strings.CutPrefix(header, "Bearer ")
+		if ok && token != "" {
+			if claims, err := mgr.Verify(token); err == nil {
+				c.Set(string(ctxKeyIdentity), claims)
+			}
+		}
+		c.Next()
+	}
+}
+
 // Identity 从 context 取当前请求身份；未登录返回 false。
 func Identity(c *gin.Context) (*auth.Claims, bool) {
 	v, ok := c.Get(string(ctxKeyIdentity))

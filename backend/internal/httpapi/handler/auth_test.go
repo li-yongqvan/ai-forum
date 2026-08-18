@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/li-yongqvan/ai-forum/backend/content"
 	"github.com/li-yongqvan/ai-forum/backend/internal/auth"
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
@@ -22,7 +23,8 @@ import (
 func newEngine(gdb *gorm.DB) *gin.Engine {
 	jwtMgr := auth.NewManager("test-secret", 7*24*time.Hour)
 	userSvc := user.NewService(user.NewGormRepo(gdb), jwtMgr)
-	return httpapi.NewEngine(config.Config{Env: "test", Port: "8080"}, jwtMgr, userSvc)
+	contentSvc := content.NewService(content.NewGormRepo(gdb), httpapi.NewUserProvider(userSvc))
+	return httpapi.NewEngine(config.Config{Env: "test", Port: "8080"}, jwtMgr, userSvc, contentSvc)
 }
 
 // seedCode 直插邀请码（auth-flow §7：管理员 DB 直管，MVP 无管理 UI）。

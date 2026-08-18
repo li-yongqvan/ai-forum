@@ -77,8 +77,11 @@ type Service interface {
 	Register(ctx context.Context, in RegisterCmd) (AuthResult, error)
 	Login(ctx context.Context, in LoginCmd) (AuthResult, error)
 	Follow(ctx context.Context, in FollowCmd) error
+	Unfollow(ctx context.Context, in FollowCmd) error
 	Ban(ctx context.Context, in BanCmd) error
 	GetUser(ctx context.Context, id int64) (UserView, error)
+	// FollowedUserIDs 返回某用户关注的用户 id 列表（供 content 构造关注流，#4 进程内调用）。
+	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
 }
 
 // ---- 实现 ----
@@ -187,6 +190,16 @@ func (s *service) Follow(ctx context.Context, in FollowCmd) error {
 		return ErrAlreadyFollow
 	}
 	return s.repo.CreateFollow(ctx, &FollowUser{FollowerID: in.FollowerID, TargetID: in.TargetID})
+}
+
+// Unfollow 取消单向关注；幂等（未关注也返回 nil，兼容 UI 防抖）。
+func (s *service) Unfollow(ctx context.Context, in FollowCmd) error {
+	return s.repo.DeleteFollow(ctx, in.FollowerID, in.TargetID)
+}
+
+// FollowedUserIDs 返回关注的用户 id 列表。
+func (s *service) FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error) {
+	return s.repo.ListFollowedUserIDs(ctx, userID)
 }
 
 // Ban 封禁用户。审计动作（moderation_actions）由 moderation 包在治理闭环中追加。

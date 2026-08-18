@@ -103,6 +103,15 @@ func (r *gormRepo) FollowExists(ctx context.Context, followerID, targetID int64)
 	return count > 0, err
 }
 
+func (r *gormRepo) ListFollowedUserIDs(ctx context.Context, followerID int64) ([]int64, error) {
+	ids := make([]int64, 0)
+	err := r.db.WithContext(ctx).
+		Model(&FollowUser{}).
+		Where("follower_id = ?", followerID).
+		Pluck("target_id", &ids).Error
+	return ids, err
+}
+
 func mapNotFound(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound

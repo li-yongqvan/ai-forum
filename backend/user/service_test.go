@@ -226,6 +226,51 @@ func TestFollow(t *testing.T) {
 	})
 }
 
+func TestUnfollow(t *testing.T) {
+	t.Run("取关成功", func(t *testing.T) {
+		f := newFakeRepo()
+		follower := f.seedUser("alice", "a@x.edu", "secret123")
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		f.follows[[2]int64{follower.ID, target.ID}] = true
+		svc := newService(f)
+		if err := svc.Unfollow(context.Background(), FollowCmd{FollowerID: follower.ID, TargetID: target.ID}); err != nil {
+			t.Fatalf("Unfollow() error = %v", err)
+		}
+		ids, _ := svc.FollowedUserIDs(context.Background(), follower.ID)
+		if len(ids) != 0 {
+			t.Errorf("取关后关注列表 = %v, want 空", ids)
+		}
+	})
+
+	t.Run("未关注也幂等成功", func(t *testing.T) {
+		f := newFakeRepo()
+		follower := f.seedUser("alice", "a@x.edu", "secret123")
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		if err := svc.Unfollow(context.Background(), FollowCmd{FollowerID: follower.ID, TargetID: target.ID}); err != nil {
+			t.Errorf("Unfollow() 应幂等成功, error = %v", err)
+		}
+	})
+}
+
+func TestFollowedUserIDs(t *testing.T) {
+	f := newFakeRepo()
+	follower := f.seedUser("alice", "a@x.edu", "secret123")
+	bob := f.seedUser("bob", "b@x.edu", "secret123")
+	carol := f.seedUser("carol", "c@x.edu", "secret123")
+	f.follows[[2]int64{follower.ID, bob.ID}] = true
+	f.follows[[2]int64{follower.ID, carol.ID}] = true
+	svc := newService(f)
+
+	ids, err := svc.FollowedUserIDs(context.Background(), follower.ID)
+	if err != nil {
+		t.Fatalf("FollowedUserIDs() error = %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("FollowedUserIDs() = %v, want 2 个", ids)
+	}
+}
+
 func TestBan(t *testing.T) {
 	t.Run("成功", func(t *testing.T) {
 		f := newFakeRepo()

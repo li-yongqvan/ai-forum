@@ -2,7 +2,10 @@
 package httpapi
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
+	"github.com/li-yongqvan/ai-forum/backend/content"
 	"github.com/li-yongqvan/ai-forum/backend/internal/auth"
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/handler"
@@ -10,8 +13,31 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/user"
 )
 
-// NewEngine 组装 Gin 引擎与全部路由（auth-flow §9 端点）。
-func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service) *gin.Engine {
+// userProviderAdapter 使 user.Service 满足 content.UserProvider（组合根适配：#7 Adapter 在 seam；
+// 内容域不 import user，作者画像与关注数据经此适配注入）。
+type userProviderAdapter struct {
+	svc user.Service
+}
+
+func (a userProviderAdapter) FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error) {
+	return a.svc.FollowedUserIDs(ctx, userID)
+}
+
+func (a userProviderAdapter) GetUserView(ctx context.Context, id int64) (content.UserView, error) {
+	u, err := a.svc.GetUser(ctx, id)
+	if err != nil {
+		return content.UserView{}, err
+	}
+	return content.UserView{ID: u.ID, Username: u.Username, AvatarURL: u.AvatarURL}, nil
+}
+
+// NewUserProvider 构造 content.UserProvider（供 main 装配 content 服务）。
+func NewUserProvider(svc user.Service) content.UserProvider {
+	return userProviderAdapter{svc: svc}
+}
+
+// NewEngine 组装 Gin 引擎与全部路由。
+func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service) *gin.Engine {
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -19,21 +45,49 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service) *g
 	r.Use(gin.Logger(), gin.Recovery())
 
 	uh := handler.NewUserHandler(userSvc)
+	ch := handler.NewContentHandler(contentSvc)
+	fh := handler.NewFollowHandler(userSvc, contentSvc)
 
 	r.GET("/healthz", handler.Health)
 
 	api := r.Group("/api/v1")
 	{
-		authGroup := api.Group("/auth")
-		{
-			authGroup.POST("/register", uh.Register) // 公开
-			authGroup.POST("/login", uh.Login)       // 公开
-			authed := authGroup.Group("")
-			authed.Use(middleware.Auth(jwtMgr))
-			authed.POST("/logout", uh.Logout) // 空实现（无状态 JWT）
-			authed.GET("/me", uh.Me)
-		}
-		// content / notify / moderation 路由由后续 ticket 挂载
+		// 鉴权中间件：内容写入/管理操作（#9 §5.0）
+		authed := api.Group("")
+		authed.Use(middleware.Auth(jwtMgr))
+
+		// auth（auth-flow §9）
+		api.POST("/auth/register", uh.Register)
+		api.POST("/auth/login", uh.Login)
+		authed.POST("/auth/logout", uh.Logout)
+		authed.GET("/auth/me", uh.Me)
+
+		// 内容读取（公开可看，可选鉴权以提供个性化 is_liked/is_faved 与关注流，#9 登录墙）
+		reads := api.Group("")
+		reads.Use(middleware.OptionalAuth(jwtMgr))
+		reads.GET("/boards", ch.ListBoards)
+		reads.GET("/topics", ch.ListTopics)
+		reads.GET("/posts", ch.ListPosts)
+		reads.GET("/posts/:id", ch.GetPost)
+		reads.GET("/posts/:id/comments", ch.GetComments)
+
+		// 内容写入（操作需登录）
+		authed.POST("/posts", ch.CreatePost)
+		authed.DELETE("/posts/:id", ch.DeletePost)
+		authed.POST("/comments", ch.CreateComment)
+		authed.DELETE("/comments/:id", ch.DeleteComment)
+		authed.POST("/likes", ch.Like)
+		authed.DELETE("/likes", ch.Unlike)
+		authed.POST("/favorites", ch.Favorite)
+		authed.DELETE("/favorites", ch.Unfavorite)
+		authed.POST("/follows", fh.Follow)
+		authed.DELETE("/follows", fh.Unfollow)
+
+		// 管理操作（moderator+，双保险：#9 §5.0）
+		mod := authed.Group("")
+		mod.Use(middleware.RequireRole("moderator", "admin"))
+		mod.POST("/posts/:id/pin", ch.PinPost)
+		mod.POST("/posts/:id/feature", ch.FeaturePost)
 	}
 	return r
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
 	"github.com/li-yongqvan/ai-forum/backend/migrations"
 	"github.com/li-yongqvan/ai-forum/backend/user"
+	"github.com/li-yongqvan/ai-forum/backend/content"
 )
 
 func main() {
@@ -41,8 +42,9 @@ func main() {
 
 	jwtMgr := auth.NewManager(cfg.JWTSecret, 7*24*time.Hour)
 	userSvc := user.NewService(user.NewGormRepo(db), jwtMgr)
+	contentSvc := content.NewService(content.NewGormRepo(db), httpapi.NewUserProvider(userSvc))
 
-	r := httpapi.NewEngine(cfg, jwtMgr, userSvc)
+	r := httpapi.NewEngine(cfg, jwtMgr, userSvc, contentSvc)
 	logger.Info("服务启动", "port", cfg.Port, "env", cfg.Env)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		logger.Error("服务退出", "err", err)

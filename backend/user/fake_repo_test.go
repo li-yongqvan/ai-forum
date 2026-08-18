@@ -123,6 +123,16 @@ func (f *fakeRepo) FollowExists(ctx context.Context, followerID, targetID int64)
 	return f.follows[[2]int64{followerID, targetID}], nil
 }
 
+func (f *fakeRepo) ListFollowedUserIDs(ctx context.Context, followerID int64) ([]int64, error) {
+	ids := make([]int64, 0)
+	for k := range f.follows {
+		if k[0] == followerID {
+			ids = append(ids, k[1])
+		}
+	}
+	return ids, nil
+}
+
 // fakeIssuer 是 TokenIssuer 的桩实现。
 type fakeIssuer struct{ token string }
 
