@@ -39,11 +39,15 @@ jobs:
 
   deploy:
     needs: test
-    if: ${{ secrets.SSH_HOST != '' }} # 未配 secrets 时整个 job 跳过
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env: # secrets 不能直接用于 if 条件（job/step 级都不行，会导致 workflow 解析失败、run 0 秒报错）
+      # 先落到 job 级 env，step 的 if 用 env 上下文判断是否配置了 SSH secrets
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -65,11 +69,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Deploy to server
+        # 未配 SSH secrets 时仅跳过部署步；镜像仍正常推 GHCR
+        if: env.SSH_HOST != ''
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             set -e
             cd /opt/ai-forum
