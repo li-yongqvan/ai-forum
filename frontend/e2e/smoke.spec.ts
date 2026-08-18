@@ -4,6 +4,10 @@ import { test, expect } from '@playwright/test'
 // 前置：后端运行于 8080；邀请码 E2E1 需在跑测前重新武装（见跑测命令）
 const uniq = Date.now().toString(36)
 
+// 1×1 透明 PNG（#12：setInputFiles 上传用；MIME sniff 识别为 image/png）
+const PNG_1X1_HEX =
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360010000050001d69f4c240000000049454e44ae426082'
+
 test('注册 → 发帖 → 详情 → 评论 → 点赞 → 关注板块 → 关注流', async ({ page }) => {
   // 1. 注册（自动登录 → /feed）
   await page.goto('/#/register')
@@ -20,11 +24,24 @@ test('注册 → 发帖 → 详情 → 评论 → 点赞 → 关注板块 → �
   await page.waitForURL(/#\/write/)
   await page.getByPlaceholder('起个清晰的标题').fill(`E2E 冒烟帖 ${uniq}`)
   await page.getByPlaceholder(/正文/).fill('这是 **冒烟** 正文')
+
+  // 2b. 图片上传（#12：选图 → 上传 → URL 自动插入正文光标处）
+  await page.locator('.editor input[type="file"]').setInputFiles({
+    name: 'e2e.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(PNG_1X1_HEX, 'hex'),
+  })
+  // 等上传成功：textarea 中出现 /uploads/ 图片 URL
+  await expect(page.locator('.content-input')).toHaveValue(/\/uploads\/[0-9a-f]+\.png/)
+
   await page.getByPlaceholder('选择板块（必选）').click()
   await page.getByRole('button', { name: '学习讨论' }).click()
   await page.getByRole('button', { name: '发布' }).click()
   await page.waitForURL(/#\/post\//, { timeout: 15_000 })
   await expect(page.getByRole('heading', { name: `E2E 冒烟帖 ${uniq}` })).toBeVisible()
+  // 详情页应渲染出上传的图片（md 外链图，src 指向 /uploads/）
+  const img = page.locator('.detail img[src*="/uploads/"]')
+  await expect(img).toBeVisible()
 
   // 3. 评论（底部输入栏）
   await page.getByPlaceholder('写下你的评论…').fill('第一条评论')

@@ -4,6 +4,7 @@ import { reactive } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import type { CommentNode } from '../api/types'
 import { formatTime } from '../utils/format'
+import { md } from '../utils/md'
 import Avatar from './Avatar.vue'
 
 const props = defineProps<{ comments: CommentNode[]; postId: number }>()
@@ -47,7 +48,9 @@ function canDelete(c: CommentNode): boolean {
                 <span class="ctime">{{ formatTime(c.created_at) }}</span>
                 <span v-if="c.floor" class="cfloor">{{ c.floor }}F</span>
               </div>
-              <div class="cbody">{{ c.content }}</div>
+              <!-- 评论内容走 md 渲染（#12：与正文一致，图片 URL 可渲染；md 已先转义防 XSS） -->
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div class="cbody" v-html="md(c.content)"></div>
               <div class="cactions">
                 <button @click="emit('reply', c.id, c.author_name)">回复</button>
                 <button @click="emit('report', c.id)">举报</button>

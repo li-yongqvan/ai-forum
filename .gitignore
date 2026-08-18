@@ -6,6 +6,12 @@
 # 数据库本地数据卷（#8）
 pgdata/
 
+# 开发默认上传目录（#12：dev 默认 ./data/uploads，仅本地，不入库）
+data/
+
+# compose 挂载的上传目录（#12：./uploads → /opt/ai-forum/uploads，运行时文件不入库）
+uploads/
+
 # Go 产物
 backend/api
 backend/*.exe

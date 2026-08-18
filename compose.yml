@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      # 上传图片落宿主机（#12 D1：nginx 托管 /uploads 直达此目录，不经 Go）
+      - ./uploads:/opt/ai-forum/uploads
     ports:
       - "127.0.0.1:8080:8080"
     networks:

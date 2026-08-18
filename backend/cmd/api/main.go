@@ -7,13 +7,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/li-yongqvan/ai-forum/backend/content"
 	"github.com/li-yongqvan/ai-forum/backend/internal/auth"
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/database"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
 	"github.com/li-yongqvan/ai-forum/backend/migrations"
+	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
-	"github.com/li-yongqvan/ai-forum/backend/content"
 )
 
 func main() {
@@ -43,8 +44,9 @@ func main() {
 	jwtMgr := auth.NewManager(cfg.JWTSecret, 7*24*time.Hour)
 	userSvc := user.NewService(user.NewGormRepo(db), jwtMgr)
 	contentSvc := content.NewService(content.NewGormRepo(db), httpapi.NewUserProvider(userSvc))
+	uploadSvc := upload.NewService(upload.Config{Dir: cfg.UploadsDir, MaxBytes: cfg.MaxUploadBytes})
 
-	r := httpapi.NewEngine(cfg, jwtMgr, userSvc, contentSvc)
+	r := httpapi.NewEngine(cfg, jwtMgr, userSvc, contentSvc, uploadSvc)
 	logger.Info("服务启动", "port", cfg.Port, "env", cfg.Env)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		logger.Error("服务退出", "err", err)

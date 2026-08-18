@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // 发帖（IA §5.3：板块必选/话题可选、草稿 localStorage 防抖 300ms、7 天过期、恢复提示）
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { useAuthStore } from '../stores/auth'
 import * as api from '../api/content'
 import type { Board, Topic } from '../api/types'
+import { insertAtCursor } from '../utils/editor'
+import ImagePicker from '../components/ImagePicker.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -19,6 +21,7 @@ const topicId = ref<number | null>(null)
 const showBoardSheet = ref(false)
 const showTopicSheet = ref(false)
 const submitting = ref(false)
+const contentEl = ref<HTMLTextAreaElement | null>(null)
 
 const draftKey = () => `af_draft_${auth.user?.id ?? 0}`
 let draftTimer: ReturnType<typeof setTimeout> | null = null
@@ -89,6 +92,19 @@ function selectTopic(t: Topic) {
   showTopicSheet.value = false
 }
 
+// 图片上传成功：把 URL 插入正文光标处（#12 D4：图片独占一行，光标移到 URL 后）
+function onImage(url: string) {
+  const el = contentEl.value
+  const start = el?.selectionStart ?? content.value.length
+  const end = el?.selectionEnd ?? start
+  const { value, cursor } = insertAtCursor(content.value, start, end, url, { block: true })
+  content.value = value
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(cursor, cursor)
+  })
+}
+
 async function submit() {
   if (!boardId.value) {
     showToast('请选择板块')
@@ -146,10 +162,15 @@ async function submit() {
     </van-cell-group>
 
     <div class="editor">
+      <div class="toolbar">
+        <ImagePicker @uploaded="onImage" />
+        <span class="toolbar-hint">图片上传后自动插入光标处</span>
+      </div>
       <textarea
+        ref="contentEl"
         v-model="content"
         class="content-input"
-        placeholder="正文（支持 Markdown：代码块、行内代码、**粗体**、链接）"
+        placeholder="正文（支持 Markdown：代码块、行内代码、**粗体**、链接、图片）"
         rows="10"
       ></textarea>
     </div>
@@ -189,6 +210,16 @@ async function submit() {
 }
 .editor {
   padding: 12px 16px;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.toolbar-hint {
+  font-size: 11.5px;
+  color: var(--ink-3);
 }
 .content-input {
   width: 100%;
