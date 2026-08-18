@@ -21,7 +21,11 @@
 
 ## 活跃 ticket
 
-> 当前无活跃 ticket（全部决策已定案，进入实现/验收阶段）。
+> 编号未定：前端部署任务未建 issue，先出 handoff 文档；接手前建议建 issue 编号并按惯例改名 `<编号>-frontend-ci-deploy.md`。
+
+| # | Ticket | handoff 文档 | 状态 |
+|---|---|---|---|
+| 待定 | 前端产物自动部署进 CI（阻断项 2） | [frontend-ci-deploy.md](frontend-ci-deploy.md) | 待新会话接手实现 |
 
 ## 已解决
 

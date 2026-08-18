@@ -107,4 +107,4 @@ B 说「修复现在在 feat/image-upload 分支上（未提交）」。事实�
 
 - **规则**：`secrets` 永不进 `if` 条件（job/step 皆禁）；要按 secrets 分支，一律 `secrets → job 级 env → step if 用 env`。
 - 建议将这条规则与 `if` 上下文白名单写入 `docs/impl/testing.md` 或 CI 约定，并在 repo 里把 actionlint 加为本地校验（`golangci-lint` 管 Go，workflow 用 actionlint）。
-- 落地顺序（用户已确认）：修 `feat/backend-scaffold`（cherry-pick `00b89ef`）→ 合并 #11、#13 到 main → 首次真实跑 `go test` CI（仓库未配 SSH secrets，部署步必跳过，不会上云）。
+- 落地顺序（用户已确认）：修 `feat/backend-scaffold`（cherry-pick `00b89ef`）→ 合并 PR #11、PR #13 到 main → 首次真实跑 `go test` CI（仓库未配 SSH secrets，部署步必跳过，不会上云）。
