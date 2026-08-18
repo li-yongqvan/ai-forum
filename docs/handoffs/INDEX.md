@@ -21,11 +21,15 @@
 
 ## 活跃 ticket
 
-| # | Ticket | 类型 | 阻塞 | Handoff 文档 | 状态 |
-|---|---|---|---|---|---|
-| #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | grilling | 已解锁（#4 已解决） | 待建 | frontier |
+| # | Ticket | 状态 | 文档 |
+|---|---|---|---|
+| #12 | [图片上传（MVP 本地上传）](https://github.com/li-yongqvan/ai-forum/issues/12) | 已挂地图 #1 frontier，待实现 | [12-image-upload.md](12-image-upload.md) · [决策](grilling-decisions/issue-12-image-upload-decisions.md) |
 
 ## 已解决
+
+| # | Ticket | 解决时间 | 结论摘要 |
+|---|---|---|---|
+| #8 | [部署与运维方案](https://github.com/li-yongqvan/ai-forum/issues/8) | 2026-08-18 | 单服务器 Docker Compose all-in-one；复用现有 nginx（目标服务器已预装，作为 #2 Caddy 推荐的条件分支）；PostgreSQL 容器化；无 Redis/消息队列；GitHub Actions SSH 直连部署；宿主机 cron pg_dump 备份；stdout + Docker json-file 日志；`/healthz` + 外部 uptime 监控；MVP 纯 HTTP on IP。产出 `docs/ops/deployment.md`，详见 issue #8 resolution comment |
 
 | # | Ticket | 解决时间 | 结论摘要 |
 |---|---|---|---|

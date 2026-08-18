@@ -1,0 +1,37 @@
+/* ============ token → Vant `--van-*` 映射（D3 验收物：亮/暗随 token 自动切换） ============ */
+:root {
+  --van-primary-color: var(--brand);
+  --van-success-color: var(--success);
+  --van-danger-color: var(--danger);
+  --van-warning-color: var(--accent-strong);
+  --van-background: var(--bg);
+  --van-background-2: var(--surface);
+  --van-background-3: var(--surface-2);
+  --van-text-color: var(--ink);
+  --van-text-color-2: var(--ink-2);
+  --van-text-color-3: var(--ink-3);
+  --van-border-color: var(--line);
+  --van-active-color: var(--surface-3);
+  --van-tabbar-background: var(--surface);
+  --van-tabbar-item-active-color: var(--brand);
+  --van-tabbar-item-active-background: var(--surface);
+  --van-nav-bar-background: var(--surface);
+  --van-nav-bar-title-text-color: var(--ink);
+  --van-nav-bar-icon-color: var(--ink);
+  --van-field-label-color: var(--ink-2);
+  --van-field-input-text-color: var(--ink);
+  --van-field-placeholder-text-color: var(--ink-3);
+  --van-button-primary-background: var(--brand);
+  --van-button-primary-border-color: var(--brand);
+  --van-toast-background: var(--ink);
+  --van-toast-text-color: var(--bg);
+  --van-popup-background: var(--surface);
+  --van-dialog-background: var(--surface);
+  --van-cell-background: var(--surface);
+  --van-cell-text-color: var(--ink);
+  --van-cell-group-background: var(--surface);
+  --van-tabs-nav-background: var(--bg);
+  --van-tabs-bottom-bar-color: var(--brand);
+  --van-search-background: var(--surface);
+  --van-index-bar-anchor-color: var(--brand);
+}

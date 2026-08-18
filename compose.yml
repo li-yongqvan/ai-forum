@@ -1,0 +1,49 @@
+# ai-forum 部署（#8 决议：单服务器 Docker Compose all-in-one）
+# api 仅绑定 127.0.0.1，外部流量经宿主机 nginx 进入（#8 §3.1）
+
+services:
+  api:
+    image: ghcr.io/li-yongqvan/ai-forum-api:latest
+    container_name: ai-forum-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - ai-forum
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-forum-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    networks:
+      - ai-forum
+    ports:
+      - "127.0.0.1:5432:5432"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ai-forum:
+    driver: bridge

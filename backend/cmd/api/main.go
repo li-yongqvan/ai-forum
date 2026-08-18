@@ -1,0 +1,53 @@
+// Package main 是 ai-forum 后端（组合 A 模块化单体）入口。
+// 装配顺序：config → database → migrate → auth → user → httpapi（#8 部署约定：迁移随应用启动）。
+package main
+
+import (
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/li-yongqvan/ai-forum/backend/internal/auth"
+	"github.com/li-yongqvan/ai-forum/backend/internal/config"
+	"github.com/li-yongqvan/ai-forum/backend/internal/database"
+	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
+	"github.com/li-yongqvan/ai-forum/backend/migrations"
+	"github.com/li-yongqvan/ai-forum/backend/user"
+	"github.com/li-yongqvan/ai-forum/backend/content"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("配置加载失败", "err", err)
+		os.Exit(1)
+	}
+
+	db, err := database.Open(cfg)
+	if err != nil {
+		logger.Error("数据库连接失败", "err", err)
+		os.Exit(1)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		logger.Error("获取数据库连接失败", "err", err)
+		os.Exit(1)
+	}
+	if err := migrations.Run(sqlDB); err != nil {
+		logger.Error("数据库迁移失败", "err", err)
+		os.Exit(1)
+	}
+
+	jwtMgr := auth.NewManager(cfg.JWTSecret, 7*24*time.Hour)
+	userSvc := user.NewService(user.NewGormRepo(db), jwtMgr)
+	contentSvc := content.NewService(content.NewGormRepo(db), httpapi.NewUserProvider(userSvc))
+
+	r := httpapi.NewEngine(cfg, jwtMgr, userSvc, contentSvc)
+	logger.Info("服务启动", "port", cfg.Port, "env", cfg.Env)
+	if err := r.Run(":" + cfg.Port); err != nil {
+		logger.Error("服务退出", "err", err)
+		os.Exit(1)
+	}
+}
