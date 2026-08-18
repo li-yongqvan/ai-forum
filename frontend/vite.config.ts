@@ -34,6 +34,8 @@ export default defineConfig({
     }),
   ],
   server: {
+    // 绑定所有网卡（手机经局域网 IP 访问，如 http://192.168.0.115:5173）
+    host: true,
     proxy: {
       // dev 环境 /api → 本地 Go 后端（D6）
       '/api': apiTarget,
