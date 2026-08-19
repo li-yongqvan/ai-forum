@@ -1,7 +1,9 @@
 package content
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -336,6 +338,33 @@ func TestGetCommentTree(t *testing.T) {
 	}
 	if tree.Comments[1].AuthorName != "mod" {
 		t.Errorf("c2 author = %s, want mod", tree.Comments[1].AuthorName)
+	}
+}
+
+// TestGetCommentTreeEmpty：空评论树契约回归（fix: 空树返回 [] 而非 nil → JSON "comments":[] 非 null）。
+func TestGetCommentTreeEmpty(t *testing.T) {
+	f, svc := newContentService()
+	f.seedPost(1, 1, 1) // 无任何评论的帖子
+
+	tree, err := svc.GetCommentTree(ctx(), 1)
+	if err != nil {
+		t.Fatalf("GetCommentTree() error = %v", err)
+	}
+	if tree.Comments == nil {
+		t.Fatal("空评论树 Comments 应为非 nil 空切片（契约：JSON 序列化恒为 [] 而非 null）")
+	}
+	if len(tree.Comments) != 0 {
+		t.Fatalf("空评论树 Comments = %d 条, want 0", len(tree.Comments))
+	}
+	raw, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"comments":[]`)) {
+		t.Fatalf("空树 JSON = %s, 期望含 \"comments\":[]", raw)
+	}
+	if bytes.Contains(raw, []byte(`"comments":null`)) {
+		t.Fatalf("空树 JSON = %s, 不得出现 \"comments\":null", raw)
 	}
 }
 

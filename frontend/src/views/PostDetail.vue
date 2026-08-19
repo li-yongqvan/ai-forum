@@ -36,8 +36,9 @@ function countNodes(nodes: CommentNode[]): number {
 async function loadComments() {
   try {
     const t = await api.getComments(id.value)
-    tree.value = t.comments
-    commentCount.value = countNodes(t.comments)
+    // 后端契约修复后空树恒为 []；此处 `?? []` 兜底旧后端/异常返回 null，防 v-if="tree.length" 与 reduce 崩溃
+    tree.value = t.comments ?? []
+    commentCount.value = countNodes(t.comments ?? [])
   } catch (e) {
     showToast((e as Error).message || '评论加载失败')
   }

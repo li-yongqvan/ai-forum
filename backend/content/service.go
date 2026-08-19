@@ -537,7 +537,9 @@ func (s *service) buildTree(ctx context.Context, postID int64, comments []*Comme
 		}
 		return node
 	}
-	view := CommentTreeView{PostID: postID}
+	// 空树也初始化为空切片：JSON 序列化恒为 "comments":[] 而非 null（契约：comments 恒为数组，
+	// 防前端对 null 直接 .reduce() 崩溃）
+	view := CommentTreeView{PostID: postID, Comments: []CommentNode{}}
 	for _, r := range roots {
 		view.Comments = append(view.Comments, build(r))
 	}
