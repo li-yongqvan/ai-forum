@@ -1,6 +1,6 @@
 # Handoff · 8888 容器化部署执行（共享服务器无 sudo，并入 #8）
 
-> 状态：2026-08-19 待新会话接手执行。**决策已全部定稿**（v3.1 执行基线），本会话只需按 §执行清单落地，无需重新探查/再评审。
+> 状态：2026-08-19 **执行中**。M1-M5 已完成（PR #17 合 main；read-only deploy key + `DEPLOY_ENABLED=false` 就绪；GHCR `ai-forum-api` 已 Public，repo 保持私有；服务器 bootstrap 三容器 healthy，`/healthz` 200）。剩余：M6 全链路验证（`DEPLOY_ENABLED=true` + push main）、M7 备份 cron。另修 bootstrap.sh 一处 pipefail bug（`ssh -T` 认证成功也退 1）。
 > 规范依据：handoff 5 段式 + wayfinder 机制（`docs/handoffs/INDEX.md`）。本工作**并入 #8，不另开 ticket**。
 
 ---
