@@ -1,0 +1,5 @@
+# 脚本/服务端执行文件强制 LF 行尾（CRLF 会让服务器 bash 直接崩：`\r: command not found`）
+# bootstrap.sh 会 scp 到服务器由 bash 执行；web.conf 由容器 nginx 读取
+*.sh text eol=lf
+deploy/web.conf text eol=lf
+deploy/*.sh text eol=lf

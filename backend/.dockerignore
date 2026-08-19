@@ -1,0 +1,5 @@
+# 卫生项（handoff 待办 5）：敏感/无关文件不进 Docker 构建上下文
+.env
+.env.*
+.git
+*.log

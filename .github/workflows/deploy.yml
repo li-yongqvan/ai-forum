@@ -1,8 +1,8 @@
 # CI/CD（#8 §5.1 + testing.md 确认项）
 # - test：go build + go test 必须通过（集成测试用 testcontainers，ubuntu-latest 自带 Docker）
 # - lint：golangci-lint 非阻塞（失败不阻断部署，仅提示）
-# - deploy：前端 npm ci + build（始终，作构建验证）+ scp 上传 /var/www/ai-forum（门控）；
-#           后端构建推送 GHCR + SSH 直连 docker compose pull && up -d；未配置 SSH secrets 时跳过上传/部署步，run 不红
+# - deploy：前端 npm ci + build（始终，作构建验证）+ scp 上传 ~/ai-forum/frontend/dist（门控）；
+#           后端构建推送 GHCR + SSH 直连 docker compose pull && up -d；未配置 SSH secrets 或 DEPLOY_ENABLED!=true 时跳过上传/部署步，run 不红
 
 name: Build and Deploy
 
@@ -41,6 +41,9 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    concurrency: # 防两次 push 部署互撞（#8 变体：容器 nginx @8888）
+      group: deploy-prod
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -83,20 +86,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Upload frontend to server
-        # scp 直传 nginx 静态根（#14 决策 2：服务器初始化已 chown /var/www/ai-forum，scp 无 sudo）
+        # scp 直传容器 nginx 静态根（#8 变体：共享服务器无 sudo → ~/ai-forum/frontend/dist，web 容器挂载）
         # strip_components: 2 去掉 frontend/dist 前缀，dist 内容直落 web root
-        if: env.SSH_HOST != ''
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ env.SSH_HOST }}
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
           source: frontend/dist/*
-          target: /var/www/ai-forum
+          target: /home/liyongquan/ai-forum/frontend/dist
           strip_components: 2
       - name: Deploy to server
-        # 未配 SSH secrets 时仅跳过部署步；镜像仍正常推 GHCR
-        if: env.SSH_HOST != ''
+        # 未配 SSH secrets 或 DEPLOY_ENABLED!=true 时仅跳过部署步；镜像仍正常推 GHCR
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ env.SSH_HOST }}
@@ -104,8 +107,10 @@ jobs:
           key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             set -e
-            cd /opt/ai-forum
+            cd ~/ai-forum
             git pull origin main
-            docker compose pull api
-            docker compose up -d api
+            mkdir -p frontend/dist uploads   # 自愈：目录被误删时先以部署用户重建，防 docker 以 root 重建后 scp 写不进
+            docker compose pull api          # v3.1：仅 api 走 GHCR（可达）；nginx/postgres 已预灌本地，up -d 用本地镜像
+            docker compose up -d
+            docker image prune -f
             docker compose ps
