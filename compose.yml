@@ -1,22 +1,49 @@
-# ai-forum 部署（#8 决议：单服务器 Docker Compose all-in-one）
-# api 仅绑定 127.0.0.1，外部流量经宿主机 nginx 进入（#8 §3.1）
+# ai-forum 部署（#8 决议演进：共享服务器无 sudo → 容器 nginx 反代 @8888）
+# api 仅绑定 127.0.0.1 内网；外部流量经 web 容器 :8888 进入（web 走 compose 网络访问 api，不依赖宿主机端口）
 
 services:
+  web:
+    image: nginx:1.27-alpine
+    container_name: ai-forum-web
+    restart: unless-stopped
+    ports:
+      - "8888:80"
+    volumes:
+      # 前端静态产物（CI scp 上传至 ./frontend/dist，见 deploy.yml）
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      # 上传图片直托宿主机 uploads（#12：nginx 托管 /uploads，不经 Go）
+      - ./uploads:/var/www/uploads:ro
+      # web 容器专属 nginx 配置（替代宿主机 nginx 站点，见 deploy/web.conf）
+      - ./deploy/web.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - ai-forum
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     image: ghcr.io/li-yongqvan/ai-forum-api:latest
     container_name: ai-forum-api
     restart: unless-stopped
+    # v3.1：以部署用户 uid/gid 运行（.env 设 APP_UID/APP_GID），uploads 归 liyongquan（免 chown）
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     env_file:
       - .env
     volumes:
-      # 上传图片落宿主机（#12 D1：nginx 托管 /uploads 直达此目录，不经 Go）
+      # 上传图片落宿主机（web 容器 /uploads alias 指向同一目录，#12 D1）
       - ./uploads:/opt/ai-forum/uploads
     ports:
       - "127.0.0.1:8080:8080"
     networks:
       - ai-forum
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s
@@ -41,6 +68,11 @@ services:
       - ai-forum
     ports:
       - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     logging:
       driver: "json-file"
       options:

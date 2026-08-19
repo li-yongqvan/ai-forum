@@ -1,8 +1,8 @@
-# ai-forum MVP 部署与运维方案
+# ai-forum 部署与运维
 
-> 本方案对应 issue #8 决议。目标：在单台已有 nginx 的服务器上，用 Docker Compose 跑起 AI 智联论坛 MVP。
+> 对应 issue #8 决策。当前线上形态为 **8888 容器化变体**（共享服务器无 sudo → 容器 nginx @8888），完整决策基线见 [deployment-v3-8888-container.md](./deployment-v3-8888-container.md)，本文件为运维速查。
 >
-> **重要前提**：MVP 阶段使用 `http://122.51.233.225/` 访问，无域名、无 HTTPS。该决策出于「当前重点是功能验证，安全债后续补」。若后续开放公测或处理真实用户数据，必须购买域名并启用 HTTPS。
+> **重要前提**：MVP 阶段使用 `http://122.51.233.225:8888/`，无域名、无 HTTPS。后果：登录凭据明文传输（安全债）；PWA Service Worker 需 secure context（HTTPS/localhost）→ SW 不注册、离线缓存/安装提示失效，SPA 正常。开放公测前必须购买域名并启用 HTTPS（演进见 v3.1 §6）。
 
 ---
 
@@ -10,254 +10,105 @@
 
 | 组件 | 方案 |
 |---|---|
-| 部署形态 | Docker Compose all-in-one |
-| 反向代理 | 复用服务器现有 **nginx**（#2 研究推荐 Caddy，但目标服务器已装 nginx，MVP 复用以减少迁移风险） |
-| 前端 | Vue 3 + Vite PWA 静态产物，由 nginx 直接托管 |
-| 后端 | Go + Gin 单进程容器，监听 `:8080` |
-| 数据库 | PostgreSQL 16 容器，数据卷持久化到宿主机 |
-| 缓存/消息队列 | **不引入 Redis / RabbitMQ / Kafka**，异步用进程内 goroutine |
-| CI/CD | GitHub Actions：构建 API 镜像推 GHCR + 构建前端并 scp 到 `/var/www/ai-forum`；SSH 直连执行 `docker compose pull && up -d` |
-| 备份 | 宿主机 cron 每日 `pg_dump` |
-| 日志 | stdout/stderr + Docker `json-file` |
-| 监控 | `/healthz` + 免费外部 uptime 监控或 cron curl |
+| 部署形态 | Docker Compose all-in-one（**容器 nginx @8888**，共享服务器无 sudo 变体，并入 #8） |
+| 反向代理 | **容器 nginx**（web 服务 `nginx:1.27-alpine`）监听 `:8888` → 反代 `api:8080`；无宿主 nginx、无 sudo |
+| 前端 | Vue 3 + Vite PWA 静态产物，web 容器托管（挂载 `~/ai-forum/frontend/dist`） |
+| 后端 | Go + Gin 单进程容器，监听 `:8080`（仅回环 `127.0.0.1:8080`） |
+| 数据库 | PostgreSQL 16 容器，数据卷 `./pgdata`（官方镜像 entrypoint 自行 chown，无 sudo） |
+| CI/CD | GitHub Actions：构建 API 镜像推 GHCR + 前端 scp `~/ai-forum/frontend/dist`；SSH 直连 `docker compose pull && up -d`；`DEPLOY_ENABLED` variable 门控上传/部署步 |
+| 备份 | liyongquan 用户 cron：每日 `pg_dump` 保留 14 份 + 每周 uploads/.env tar 保留 8 份 |
+| 日志 | Docker `json-file` 轮转（10m×3） |
+| 监控 | `/healthz`（web 反代 api）+ 外部 uptime / cron curl |
 
 ---
 
 ## 1. 服务器结构
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────┐
 │  用户 / App                                                  │
-│         http://122.51.233.225/                               │
-└─────────────────────────┬───────────────────────────────────┘
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│  nginx（宿主机已安装）                                        │
-│  • 80 端口监听                                               │
-│  • /api/*  ──►  http://localhost:8080  (Go API)              │
-│  • 其它路径 ──►  /var/www/ai-forum/  (前端静态文件)            │
-└─────────────────────────┬───────────────────────────────────┘
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Docker Compose 网络                                          │
-│  ┌─────────────────┐      ┌─────────────────────────────┐   │
-│  │  ai-forum-api   │      │  ai-forum-postgres          │   │
-│  │  Go + Gin       │◄────►│  PostgreSQL 16              │   │
-│  │  port 8080      │      │  port 5432                  │   │
-│  │  (容器)          │      │  数据卷 ./pgdata:/var/lib/...│  │
-│  └─────────────────┘      └─────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+│        http://122.51.233.225:8888/                          │
+└──────────────────────────┬─────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────┐
+│  Docker Compose 网络（bridge: ai-forum）                     │
+│  ┌───────────────────────┐                                  │
+│  │  web（容器 nginx）     │  • :8888 → 80                    │
+│  │  nginx:1.27-alpine    │  • /api/ → proxy_pass api:8080    │
+│  │  挂载 frontend/dist   │  • /uploads/ → alias              │
+│  │       + uploads +     │  • limit_req login/register       │
+│  │       web.conf        │  • SPA 回退                        │
+│  └──────────┬────────────┘                                  │
+│             │ 127.0.0.1:8080 仅回环                           │
+│  ┌──────────▼────────────┐    ┌──────────────────────────┐  │
+│  │  api（Go + Gin）      │◄──►│  postgres (PG 16)        │  │
+│  │  ghcr.io/...:latest   │    │  127.0.0.1:5432          │  │
+│  │  user: 1003:1005      │    │  ./pgdata                │  │
+│  │  ./uploads:rw         │    │  pg_isready healthcheck  │  │
+│  └───────────────────────┘    └──────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 2. 前置条件
-
-- 一台 Ubuntu 服务器，已安装 nginx（当前 `122.51.233.225` 已满足）。
-- 服务器已安装 Docker + Docker Compose（v2）。
-- GitHub 仓库已初始化（当前尚未初始化，后续替换占位符）。
-- 服务器 SSH 私钥已配置到 GitHub Secrets：`SSH_HOST`、`SSH_USER`、`SSH_PRIVATE_KEY`。
+要点：
+- **共享服务器无 sudo**（liyongquan uid 1003，唯一 sudoer 是 `ubuntu`）→ 容器 nginx @8888 变体，避开宿主 nginx（占 80）与 `/opt`/`/var/www` 的 root 权限。
+- api 以 `user: ${APP_UID}:${APP_GID}`（=1003:1005）运行，uploads 归 liyongquan，免 chown。
+- 基础镜像（nginx/postgres）已预灌服务器本地（Docker Hub 被墙），CI/bootstrap 仅 `pull api`（GHCR 可达）。
+- 8888 端口外部 TCP 可达（安全组已放行）。
 
 ---
 
-## 3. 配置文件
+## 2. 基础设施清单
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 服务器 SSH（CI 用） | ✓ | Actions secrets `SSH_HOST/SSH_USER/SSH_PRIVATE_KEY`；公钥在服务器 `~/.ssh/authorized_keys` |
+| repo read-only deploy key | ✓ | 服务器 `~/.ssh/ai-forum-repo` + `~/.ssh/config`（Host github.com）；GitHub 侧同名 deploy key（只读） |
+| 基础镜像预灌 | ✓ | `nginx:1.27-alpine`、`postgres:16-alpine` 已在服务器（`docker save\|ssh docker load`） |
+| GHCR api 镜像 | Public | `ghcr.io/li-yongqvan/ai-forum-api`（repo 保持私有，仅公开镜像包） |
+| GitHub variable | `DEPLOY_ENABLED=false` | 服务器 bootstrap 完成后置 `true` |
+| GitHub secrets | ✓ | `SSH_HOST`、`SSH_USER`、`SSH_PRIVATE_KEY` |
+
+---
+
+## 3. 配置
 
 ### 3.1 `compose.yml`
 
-放在仓库根目录。
+仓库根，三服务 `web`（容器 nginx @8888）+ `api` + `postgres`。与 v3.1 §3.1 一致（api 的 `user:` override、postgres `pg_isready` healthcheck、web/api 的 `depends_on: condition: service_healthy`）。以仓库实际文件为准。
 
-```yaml
-services:
-  api:
-    image: ghcr.io/li-yongqvan/ai-forum-api:latest
-    container_name: ai-forum-api
-    restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      - "127.0.0.1:8080:8080"
-    networks:
-      - ai-forum
-    depends_on:
-      - postgres
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+### 3.2 `deploy/web.conf`（容器 nginx 配置）
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: ai-forum-postgres
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./pgdata:/var/lib/postgresql/data
-    networks:
-      - ai-forum
-    ports:
-      - "127.0.0.1:5432:5432"
+web 容器挂载到 `/etc/nginx/conf.d/default.conf`。关键项：
+- `proxy_pass http://api:8080;` **无尾斜杠**——Gin 全量挂 `/api/v1`，带尾斜杠会把 `/api/v1/x` 改写成 `/v1/x` → 全站 404。
+- `limit_req_zone` 对 login/register 精确限流（10r/m，burst 20）——认证撞库防护。
+- `client_max_body_size 20m`（图片上传）。
+- `/uploads/` alias `/var/www/uploads/`（web 直托，图片 GET 不经 Go）。
 
-networks:
-  ai-forum:
-    driver: bridge
-```
+### 3.3 `.env.example` / `.env`
 
-> 注意：`api` 只绑定 `127.0.0.1:8080`，避免直接暴露在公网；所有外部流量经 nginx 进入。
+`.env.example` 是唯一权威键清单，服务器 `.env` 由 bootstrap 以模板生成（含 `DATABASE_URL`、`APP_ENV=production`、`UPLOADS_DIR`、追加 `APP_UID/APP_GID`），并有必填键校验。缺 `DATABASE_URL` api 启动即挂（config.go L49）。
 
-### 3.2 nginx 站点配置
+### 3.4 `deploy/bootstrap.sh`
 
-路径：`/etc/nginx/sites-available/ai-forum`
-
-```nginx
-server {
-    listen 80;
-    server_name 122.51.233.225;
-
-    root /var/www/ai-forum;
-    index index.html;
-
-    # 前端静态文件 + 前端路由回退
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # API 反向代理到本机 Go 容器
-    location /api/ {
-        proxy_pass http://127.0.0.1:8080/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # 健康检查（可选，供外部监控使用）
-    location /healthz {
-        proxy_pass http://127.0.0.1:8080/healthz;
-    }
-
-    # 上传图片（#12 D1：nginx 直接托管，图片 GET 不经 Go）
-    location /uploads/ {
-        alias /opt/ai-forum/uploads/;
-        expires 30d;
-    }
-}
-```
-
-启用配置：
-
-```bash
-sudo ln -s /etc/nginx/sites-available/ai-forum /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-### 3.3 `.env.example`
-
-仓库中提供示例，服务器上复制为 `.env` 并填写真实值。
-
-```bash
-# 应用
-APP_ENV=production
-APP_PORT=8080
-DATABASE_URL=postgres://afuser:afpass@postgres:5432/aiforum?sslmode=disable
-
-# PostgreSQL
-POSTGRES_USER=afuser
-POSTGRES_PASSWORD=afpass
-POSTGRES_DB=aiforum
-
-# JWT / 加密（请生成强随机字符串）
-JWT_SECRET=change-me-in-production
-
-# 图片上传（#12；以下为默认值，可省略）
-UPLOADS_DIR=/opt/ai-forum/uploads
-UPLOAD_MAX_BYTES=5242880
-```
-
-### 3.4 `backup.sh`
-
-放在服务器 `/opt/ai-forum/backup.sh`，每日 cron 执行。
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-PROJECT_DIR="/opt/ai-forum"
-BACKUP_DIR="/opt/ai-forum/backups"
-DB_NAME="aiforum"
-DB_USER="afuser"
-DATE=$(date +%Y%m%d_%H%M%S)
-FILE="${BACKUP_DIR}/aiforum_${DATE}.sql"
-
-mkdir -p "${BACKUP_DIR}"
-cd "${PROJECT_DIR}"
-
-docker compose exec -T postgres pg_dump -U "${DB_USER}" "${DB_NAME}" > "${FILE}"
-gzip "${FILE}"
-
-# 保留最近 7 天
-find "${BACKUP_DIR}" -type f -name '*.sql.gz' -mtime +7 -delete
-
-echo "Backup done: ${FILE}.gz"
-```
-
-添加 cron：
-
-```bash
-chmod +x /opt/ai-forum/backup.sh
-# 每天凌晨 3 点备份
-(crontab -l 2>/dev/null; echo "0 3 * * * /opt/ai-forum/backup.sh >> /var/log/ai-forum-backup.log 2>&1") | crontab -
-```
+服务器初始化一键脚本（进仓库）：GitHub SSH 自检 → SSH remote clone → 预建 `frontend/dist uploads ~/backups` → 模板生成 `.env` → `docker compose pull api` + `up -d`。幂等（`.env` 已存在则跳过）。**无 chown、无 sudo**。
 
 ---
 
-## 4. 首次部署步骤
+## 4. 首次部署（共享服务器无 sudo）
 
-1. 在服务器上准备目录：
+1. 前置：read-only deploy key（§2）+ 基础镜像预灌 + GHCR api 镜像 Public + `DEPLOY_ENABLED=false`。
+2. 把 `deploy/bootstrap.sh` 拷到服务器，执行：
    ```bash
-   sudo mkdir -p /opt/ai-forum
-   sudo chown $USER:$USER /opt/ai-forum
-   # 上传目录：容器 app 用户 UID=1000 需要写权限（Dockerfile 已固定，#12）
-   sudo mkdir -p /opt/ai-forum/uploads
-   sudo chown 1000:1000 /opt/ai-forum/uploads
-   cd /opt/ai-forum
+   bash ~/bootstrap-8888.sh
    ```
-
-2. 首次手动 clone 仓库（后续由 Actions 更新）：
+3. 验证：
    ```bash
-   git clone https://github.com/li-yongqvan/ai-forum.git .
+   docker compose ps          # 三容器 healthy
+   curl http://122.51.233.225:8888/healthz
    ```
+4. GitHub 仓库置 `DEPLOY_ENABLED=true`，push main 触发 CI 全链路部署（前端 scp + `up -d`）。
 
-3. 配置环境变量：
-   ```bash
-   cp .env.example .env
-   # 编辑 .env，修改 POSTGRES_PASSWORD 和 JWT_SECRET
-   ```
-
-4. 配置 nginx（见 3.2）。
-
-5. 启动数据库和服务：
-   ```bash
-   docker compose up -d postgres
-   # 等待数据库就绪
-   docker compose up -d api
-   ```
-
-6. 准备前端静态目录（此后前端产物由 CI 自动 scp 上传，见 §5.1；scp 无 sudo，需一次性 chown 给部署用户）：
-   ```bash
-   sudo mkdir -p /var/www/ai-forum
-   sudo chown $USER:$USER /var/www/ai-forum
-   ```
-
-7. 验证：
-   ```bash
-   curl http://122.51.233.225/healthz
-   curl http://122.51.233.225/api/v1/posts   # 示例
-   ```
+后续前端/后端更新：push main 自动部署（deploy.yml，`DEPLOY_ENABLED=true` 时上传/部署步生效）。
 
 ---
 
@@ -265,122 +116,20 @@ chmod +x /opt/ai-forum/backup.sh
 
 ### 5.1 `.github/workflows/deploy.yml`
 
-```yaml
-name: Build and Deploy
+`push main` 触发。deploy job：
+- **始终**：前端 npm ci + build（构建验证）；构建并推 API 镜像到 GHCR（`latest` + `sha` 双标签）。
+- **门控**（`if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'`）：scp 前端到 `~/ai-forum/frontend/dist`；SSH 执行 `git pull → mkdir -p frontend/dist uploads → docker compose pull api → up -d → image prune`。
+- job 级 `concurrency: group: deploy-prod` 防互撞。
+- secrets 不进 `if`（三段式：secrets → job env → step if 判 env，见 docs/impl/testing.md §4.1）。
 
-on:
-  push:
-    branches: [main]
+### 5.2 需配置的 GitHub Secrets / Variables
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
-      - name: Build
-        working-directory: backend
-        run: go build ./...
-      - name: Vet
-        working-directory: backend
-        run: go vet ./...
-      - name: Test
-        working-directory: backend
-        run: go test ./...
-
-  lint:
-    runs-on: ubuntu-latest
-    continue-on-error: true # 非阻塞
-    steps:
-      - uses: actions/checkout@v4
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          working-directory: backend
-
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    env: # secrets 不能进 if，先落到 job 级 env，step 的 if 判 env（见 docs/impl/testing.md §4.1）
-      SSH_HOST: ${{ secrets.SSH_HOST }}
-      SSH_USER: ${{ secrets.SSH_USER }}
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      # 前端：始终构建（main 上的构建验证），上传步按 SSH secrets 门控
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22 # Vite 8.2 engines 要求 ^20.19.0 || >=22.12.0
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push API image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          push: true
-          tags: |
-            ghcr.io/li-yongqvan/ai-forum-api:latest
-            ghcr.io/li-yongqvan/ai-forum-api:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Upload frontend to server
-        if: env.SSH_HOST != ''
-        uses: appleboy/scp-action@v1.0.0
-        with:
-          host: ${{ env.SSH_HOST }}
-          username: ${{ env.SSH_USER }}
-          key: ${{ env.SSH_PRIVATE_KEY }}
-          source: frontend/dist/*
-          target: /var/www/ai-forum
-          strip_components: 2 # 去掉 frontend/dist 前缀，dist 内容直落 web root
-      - name: Deploy to server
-        if: env.SSH_HOST != ''
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ env.SSH_HOST }}
-          username: ${{ env.SSH_USER }}
-          key: ${{ env.SSH_PRIVATE_KEY }}
-          script: |
-            set -e
-            cd /opt/ai-forum
-            git pull origin main
-            docker compose pull api
-            docker compose up -d api
-            docker compose ps
-```
-
-> 前端自动部署说明（#14）：
-> - 前端在 deploy job **始终构建**（npm ci + build，免费获得 main 上的构建验证）；仅 **scp 上传步**按 `if: env.SSH_HOST != ''` 门控——未配 SSH secrets 时前端照常构建、上传/部署步跳过，run 不红。
-> - scp 直传 `/var/www/ai-forum` **无 sudo**，需服务器初始化一次性 `chown`（见 §4 step 6）。
-> - 旧哈希文件暂不清理（scp 只增改不删；Vite 产物按内容哈希命名，留存仅占磁盘，MVP 可接受）。
-
-### 5.2 需要提前配置的 GitHub Secrets
-
-| Secret | 值 |
+| 项 | 值 |
 |---|---|
-| `SSH_HOST` | `122.51.233.225` |
-| `SSH_USER` | 服务器登录用户名（如 `ubuntu`） |
-| `SSH_PRIVATE_KEY` | 服务器私钥（建议专门生成一个 deploy key） |
+| Secret `SSH_HOST` | `122.51.233.225` |
+| Secret `SSH_USER` | `liyongquan` |
+| Secret `SSH_PRIVATE_KEY` | CI deploy key 私钥（公钥在服务器 `~/.ssh/authorized_keys`） |
+| Variable `DEPLOY_ENABLED` | `false`（bootstrap 完成后 `true`） |
 
 ---
 
@@ -388,49 +137,30 @@ jobs:
 
 ### 6.1 日志
 
-- Go 应用日志输出到 stdout/stderr。
-- Docker 默认 `json-file` 驱动收集：
-  ```bash
-  docker logs -f ai-forum-api
-  docker logs -f ai-forum-postgres
-  ```
-- 可选：在 `compose.yml` 加 `logging` 限制防止占满磁盘：
-  ```yaml
-  logging:
-    driver: "json-file"
-    options:
-      max-size: "10m"
-      max-file: "3"
-  ```
+- 三服务均 `json-file` 轮转（10m×3）。`docker logs -f ai-forum-api` 等。
+- `docker image prune -f` 由部署脚本定期执行。
 
 ### 6.2 监控
 
-- Go API 暴露 `/healthz` 接口，返回 200 OK 即健康。
-- 最低成本监控方案：
-  - 免费外部服务：UptimeRobot / Better Stack（原 Oh Dear）/ 阿里云拨测，定时访问 `http://122.51.233.225/healthz`。
-  - 或服务器 cron：
-    ```bash
-    */5 * * * * curl -fsS http://localhost/healthz > /dev/null || echo "$(date) healthcheck failed" >> /var/log/ai-forum-health.log
-    ```
+- `/healthz`（经 web 反代 api）返回 200 即健康。
+- 免费外部监控（UptimeRobot / Better Stack / 阿里云拨测）访问 `http://122.51.233.225:8888/healthz`。
 
 ---
 
 ## 7. 备份与恢复
 
-### 7.1 备份
+备份 cron（liyongquan 用户，`crontab -e`，见 v3.1 §5）：
+- 每日 3 点 `pg_dump` → `~/backups/forum-$(date +%F).sql.gz`，保留 14 份。
+- 每周日 4 点 tar `uploads + .env`（含 JWT_SECRET/DB 密码，恢复必需）→ `~/backups/uploads-*.tar.gz`，保留 8 份。
+- 建议定期把 dump 拉离本机（本地下载或对象存储，当前为开放项）。
 
-已配置 `backup.sh` + cron，每日凌晨 3 点生成 `.sql.gz`，保留 7 天。
-
-### 7.2 恢复
-
+恢复：
 ```bash
-cd /opt/ai-forum
+cd ~/ai-forum
 docker compose stop api
-# 清空前确认
-docker compose exec postgres dropdb -U afuser aiforum || true
-docker compose exec postgres createdb -U afuser aiforum
-# 恢复最近一次备份
-zcat backups/aiforum_YYYYMMDD_HHMMSS.sql.gz | docker compose exec -T postgres psql -U afuser aiforum
+docker compose exec postgres dropdb -U forum forum || true
+docker compose exec postgres createdb -U forum forum
+zcat ~/backups/forum-YYYY-MM-DD.sql.gz | docker compose exec -T postgres psql -U forum forum
 docker compose start api
 ```
 
@@ -440,16 +170,15 @@ docker compose start api
 
 | 当前决策 | 技术债 | 触发升级条件 |
 |---|---|---|
-| 无域名，纯 HTTP | 登录凭据明文传输 | 有真实用户 / 公测前必须购买域名 + certbot HTTPS |
-| 复用 nginx 而非 Caddy | 需手动 certbot 续期 | 购买域名后，可继续使用 nginx+certbot；如想自动 HTTPS，可迁移到 Caddy |
-| GitHub Actions SSH 部署 | SSH 私钥存于 GitHub Secrets | 团队扩大 / 多环境部署时，改为 webhook + watchtower 或 ArgoCD |
-| 单服务器 | 无高可用 | 用户量增长 / 需要 99.9% SLA 时考虑多机 + LB |
-| 无 Redis | 进程内 goroutine 异步 | 通知队列积压、需要削峰填谷时引入 Redis / 消息队列 |
+| 无域名，纯 HTTP @8888 | 登录凭据明文；**PWA SW 不注册**（离线/安装失效，SPA 正常） | 开放公测/真实用户前必须购买域名 + HTTPS（可容器化 Caddy 自动签） |
+| 容器 nginx @8888（80 被宿主 nginx 占用） | 端口非标准 | 请 ubuntu/opsadmin 配合：停 default 站点后宿主 nginx 反代 `127.0.0.1:8888`，或释放 80 给 web 容器（docker 绑 80 不需 sudo） |
+| GitHub Actions SSH 部署 | SSH 私钥存 GitHub Secrets | 团队扩大/多环境时改 webhook + watchtower 或 ArgoCD |
+| 单服务器 | 无高可用 | 用户量增长/需 SLA 时多机 + LB |
+| 无 Redis | 进程内 goroutine 异步 | 通知队列积压时引入 Redis/消息队列 |
 
 ---
 
-## 9. 与 #2 研究结论的关系
+## 9. 决策演进
 
-- #2 推荐 **Caddy** 作为 greenfield 反向代理（自动 HTTPS、配置简单）。
-- 本方案选择 **nginx** 是因为目标部署服务器 `122.51.233.225` 已预装 nginx 并占用 80 端口。为避免迁移风险和额外维护面，MVP 阶段复用 nginx。
-- Caddy 方案仍保留为「新服务器 / 无 nginx」场景的推荐，未来购买域名后也可根据运维偏好切换。
+- **#8 变体**：原决策（宿主 nginx @80）因共享服务器无 sudo 不可行 → **容器 nginx @8888 变体**，并入 #8（不另开 ticket）。决策基线：`deployment-v3-8888-container.md`（v3.1）。
+- 长期形态（v3.1 §6）：域名 + 443（Caddy 自动签 HTTPS）；80 的障碍仅是宿主 nginx 占用，迁回 80 为一次性 ops 配合。
