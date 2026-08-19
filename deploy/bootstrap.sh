@@ -5,7 +5,9 @@ set -euo pipefail
 APP_DIR="$HOME/ai-forum"
 
 # 0. GitHub SSH 凭证自检（匿名 clone 私有 repo 必失败，先 fail fast）
-ssh -T git@github.com 2>&1 | grep -q "successfully authenticated" \
+# 注：ssh -T git@github.com 认证成功也返回 exit 1（GitHub 不提供 shell），pipefail 下直接管道会误判失败 → 先捕获输出再 grep
+auth_out=$(ssh -T git@github.com 2>&1 || true)
+echo "$auth_out" | grep -q "successfully authenticated" \
   || { echo "FATAL: GitHub SSH 认证失败，先按执行清单第 1 步配 deploy key" >&2; exit 1; }
 
 # 1. 代码（SSH remote；后续 CI 的 git pull 同路）
