@@ -50,5 +50,8 @@ export default defineConfig({
     globals: true,
     // e2e/ 是 Playwright 冒烟（testing.md §3.2），不得被 vitest 当作单测收集
     exclude: ['e2e/**', 'node_modules/**'],
+    // 组件单测会经 unplugin-vue-components 按需引入 Vant 组件样式：
+    // 让 Vant 走 Vite 转换（其 es 模块内含 .css import），否则 vite-node 直接载 .css 报 Unknown file extension
+    server: { deps: { inline: [/vant/] } },
   },
 })
