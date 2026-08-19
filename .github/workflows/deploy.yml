@@ -112,5 +112,6 @@ jobs:
             mkdir -p frontend/dist uploads   # 自愈：目录被误删时先以部署用户重建，防 docker 以 root 重建后 scp 写不进
             docker compose pull api          # v3.1：仅 api 走 GHCR（可达）；nginx/postgres 已预灌本地，up -d 用本地镜像
             docker compose up -d
+            docker compose exec web nginx -t && docker compose exec web nginx -s reload   # web.conf bind mount 只更新文件不重建容器，需 reload 才生效（评审 Q5）
             docker image prune -f
             docker compose ps
