@@ -68,7 +68,7 @@
 
 ## 4. 分支与提交
 
-1. **动手前对齐**：`git fetch origin && git checkout main && git pull origin main`（本地可能有并行会话残留分支，先对齐远端）。
+1. **动手前对齐**：先 `git status --porcelain` 确认工作区无其他会话的未提交改动（脏就停，查明再动），再 `git fetch origin && git checkout main && git pull origin main`（本地可能有并行会话残留分支，先对齐远端）。并行会话建议用 `git worktree` 隔离工作区（见 §11）。
 2. **建分支**：`git checkout -b <type>/<slug>`（type：`feat`/`fix`/`docs`/`chore`/`refactor`）。
 3. **提交规范**：conventional commit，`<type>(<scope>): <subject>`，scope 用包/模块名（如 `fix(content)`、`docs(ops)`）。
 4. **服务器 repo 卫生红线**：服务器 `~/ai-forum` 内文件**只准 git 改动，禁止 scp/手工写**（会挡 CI 的 git pull，踩过，见 lessons §1-B）。
@@ -212,6 +212,7 @@ curl http://122.51.233.225:8888/api/v1/posts
 | `frontend/components.d.ts` 被改写 | 提交前 `git checkout --` |
 | PWA 纯 HTTP 下 SW 不注册 | 已知技术债（#8 决策后果），SPA 正常 |
 | 镜像名 `li-yongquan` vs `li-yongqvan` | 用 `li-yongqvan`（qvan） |
+| 并行会话共用工作区——未提交改动跨 checkout 存活；HEAD 停在他人分支时 commit 会误落错分支 | 动手前先 `git status --porcelain`（脏就停）；会话收尾要么提交、要么把 HEAD 交还正确分支；结构性隔离用 `git worktree` |
 
 ---
 
