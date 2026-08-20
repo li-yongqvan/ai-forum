@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 我的（IA §4：游客原地引导；资料卡 + 帖子/收藏/关注 分段，收藏/关注 待后端）
+// 我的（IA §4：游客原地引导；资料卡 + 帖子列表。收藏/关注列表未实现（#23），占位 tab 已隐藏）
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
@@ -7,16 +7,13 @@ import * as api from '../api/content'
 import type { UserProfile } from '../api/types'
 import { formatTime } from '../utils/format'
 import Avatar from '../components/Avatar.vue'
-import SegTabs from '../components/SegTabs.vue'
 import PostList from '../components/PostList.vue'
-import Empty from '../components/Empty.vue'
 import LoginGuide from '../components/LoginGuide.vue'
 import AppIcon from '../components/AppIcon.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
 const profile = ref<UserProfile | null>(null)
-const tab = ref<'posts' | 'favs' | 'follows'>('posts')
 
 onMounted(async () => {
   if (!auth.isLoggedIn) return
@@ -57,18 +54,7 @@ const fetcher = (page: number, pageSize: number) =>
         </div>
       </div>
 
-      <SegTabs
-        :options="[
-          { key: 'posts', label: '帖子' },
-          { key: 'favs', label: '收藏' },
-          { key: 'follows', label: '关注' },
-        ]"
-        :model-value="tab"
-        @update:model-value="(v: string) => (tab = v as 'posts' | 'favs' | 'follows')"
-      />
-
-      <PostList v-if="tab === 'posts'" :fetcher="fetcher" empty-title="还没有发布过帖子" />
-      <Empty v-else :title="tab === 'favs' ? '收藏功能即将上线' : '关注列表即将上线'" />
+      <PostList :fetcher="fetcher" empty-title="还没有发布过帖子" />
     </template>
   </div>
 </template>
