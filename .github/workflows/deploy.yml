@@ -38,8 +38,25 @@ jobs:
         with:
           working-directory: backend
 
+  frontend-test:
+    runs-on: ubuntu-latest
+    continue-on-error: true # 过渡（地图 Roadmap 第 2 项）：前端单测先不阻断；连续 5 run 全绿后移除本行转阻塞
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # 与 deploy 内前端构建一致（Vite 8.2 engines ^20.19.0 || >=22.12.0）
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend unit tests
+        working-directory: frontend
+        run: npm run test:unit
+
   deploy:
-    needs: test
+    needs: [test, frontend-test]
     runs-on: ubuntu-latest
     concurrency: # 防两次 push 部署互撞（#8 变体：容器 nginx @8888）
       group: deploy-prod
