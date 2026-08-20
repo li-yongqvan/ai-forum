@@ -2,7 +2,7 @@
 // mock 刻意返回后端旧契约 {"comments":null}（空评论树被序列化为 null），
 // 验证前端 `?? []` 防御 + 评论数 0 + 空状态渲染。
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import CommentTree from '../components/CommentTree.vue'
 import Empty from '../components/Empty.vue'
 import type { CommentTree as CommentTreeType, Post } from '../api/types'
@@ -28,6 +28,7 @@ vi.mock('../api/content', () => ({
 
 import PostDetail from './PostDetail.vue'
 import * as api from '../api/content'
+import { showToast } from 'vant'
 
 function mockPost(): Post {
   return {
@@ -74,5 +75,96 @@ describe('PostDetail 无评论场景', () => {
     const empty = wrapper.findComponent(Empty)
     expect(empty.exists()).toBe(true)
     expect(empty.props('title')).toBe('还没有评论')
+  })
+})
+
+describe('PostDetail 分享（Web Share API + 复制兜底）', () => {
+  const postUrl = `${location.origin}/#/post/5`
+
+  // jsdom 无原生 share/clipboard：以 configurable 属性注入，逐用例覆盖成功/取消/报错/不支持
+  function setShare(impl: undefined | ((data: ShareData) => Promise<void>)) {
+    Object.defineProperty(navigator, 'share', { configurable: true, value: impl })
+  }
+  function setClipboard(writeText: ((url: string) => void) | undefined) {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  }
+
+  afterEach(() => {
+    // 还原为未定义，避免污染同文件其他用例
+    setShare(undefined)
+    setClipboard(undefined)
+    vi.clearAllMocks()
+  })
+
+  async function mountAndClickShare() {
+    vi.mocked(api.getPost).mockResolvedValue(mockPost())
+    vi.mocked(api.getComments).mockResolvedValue({ post_id: 5, comments: [] })
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+    const btn = wrapper.findAll('button.dact').find((b) => b.text().includes('分享'))
+    expect(btn).toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('支持原生分享：调用 navigator.share(title,url)，不再复制链接/弹提示', async () => {
+    const shareSpy = vi.fn().mockResolvedValue(undefined)
+    const clipboardSpy = vi.fn()
+    setShare(shareSpy)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(shareSpy).toHaveBeenCalledWith({ title: '人工测试', url: postUrl })
+    expect(clipboardSpy).not.toHaveBeenCalled()
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('用户取消原生分享（AbortError）：静默结束，不复制、不提示', async () => {
+    const shareSpy = vi.fn().mockRejectedValue(Object.assign(new Error('canceled'), { name: 'AbortError' }))
+    const clipboardSpy = vi.fn()
+    setShare(shareSpy)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(shareSpy).toHaveBeenCalled()
+    expect(clipboardSpy).not.toHaveBeenCalled()
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('原生分享抛出其他错误：回退复制链接并提示', async () => {
+    const shareSpy = vi.fn().mockRejectedValue(new Error('NotAllowedError'))
+    const clipboardSpy = vi.fn()
+    setShare(shareSpy)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(clipboardSpy).toHaveBeenCalledWith(postUrl)
+    expect(showToast).toHaveBeenCalledWith('链接已复制')
+  })
+
+  it('不支持原生分享：回退复制链接并提示', async () => {
+    const clipboardSpy = vi.fn()
+    setShare(undefined)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(clipboardSpy).toHaveBeenCalledWith(postUrl)
+    expect(showToast).toHaveBeenCalledWith('链接已复制')
+  })
+
+  it('复制链接也失败：toast 直接展示链接兜底', async () => {
+    setShare(undefined)
+    setClipboard(() => {
+      throw new Error('denied')
+    })
+
+    await mountAndClickShare()
+
+    expect(showToast).toHaveBeenCalledWith(`链接：${postUrl}`)
   })
 })
