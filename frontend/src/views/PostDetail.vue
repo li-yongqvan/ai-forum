@@ -100,8 +100,18 @@ async function toggleFav() {
     showToast((e as Error).message || '操作失败')
   }
 }
-function share() {
+async function share() {
   const url = `${location.origin}/#/post/${id.value}`
+  // 原生分享优先（移动端系统分享面板）；不支持或失败回退复制链接
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: post.value?.title ?? document.title, url })
+      return
+    } catch (err) {
+      // 用户取消分享（AbortError）不算失败：静默结束，不弹提示
+      if ((err as DOMException)?.name === 'AbortError') return
+    }
+  }
   try {
     navigator.clipboard.writeText(url)
     showToast('链接已复制')
