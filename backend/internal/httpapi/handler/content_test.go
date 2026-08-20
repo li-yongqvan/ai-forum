@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -411,5 +412,98 @@ func TestUserProfileEndpoint(t *testing.T) {
 	// 不存在 → 404
 	if w := doJSON(t, r, http.MethodGet, "/api/v1/users/9999", nil, ""); w.Code != http.StatusNotFound {
 		t.Errorf("不存在用户 = %d, want 404", w.Code)
+	}
+}
+
+// TestFavoritesList：GET /api/v1/favorites（#23）。真 PG 是 GORM JOIN + Select 列遮蔽（评审 D1）
+// 与软删过滤唯一能暴露的闸门，故断言**真实主键**而非仅顺序/长度。
+func TestFavoritesList(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-FL1")
+	bob := registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-FL2")
+
+	p1 := createPost(t, r, alice.Token, 1, "alice 帖1")
+	p2 := createPost(t, r, alice.Token, 1, "alice 帖2")
+
+	// 收藏 p1 再收藏 p2 → 列表按收藏时间倒序：p2 在前
+	fav := func(postID int64) {
+		t.Helper()
+		if w := doJSON(t, r, http.MethodPost, "/api/v1/favorites", map[string]any{"post_id": postID}, alice.Token); w.Code != http.StatusOK {
+			t.Fatalf("favorite p%d = %d, body=%s", postID, w.Code, w.Body.String())
+		}
+	}
+	fav(p1.ID)
+	fav(p2.ID)
+
+	// 完整列表：真实主键 + 顺序 + viewer.favorited
+	w := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, alice.Token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /favorites = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Items    []postView `json:"items"`
+		Page     int        `json:"page"`
+		PageSize int        `json:"page_size"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 2 || resp.Items[0].ID != p2.ID || resp.Items[1].ID != p1.ID {
+		t.Errorf("收藏列表 = %d 条, want [p2(%d) p1(%d)]（收藏时间倒序，真实主键）", len(resp.Items), p2.ID, p1.ID)
+	}
+	for _, it := range resp.Items {
+		if it.Viewer == nil || !it.Viewer.Favorited {
+			t.Errorf("items viewer.favorited 应为 true, got %+v", it.Viewer)
+		}
+	}
+
+	// 分页
+	w1 := doJSON(t, r, http.MethodGet, "/api/v1/favorites?page_size=1", nil, alice.Token)
+	var page1 struct {
+		Items []postView `json:"items"`
+	}
+	_ = json.Unmarshal(w1.Body.Bytes(), &page1)
+	if len(page1.Items) != 1 || page1.Items[0].ID != p2.ID {
+		t.Errorf("page_size=1 = %d 条, want [p2]", len(page1.Items))
+	}
+	w2 := doJSON(t, r, http.MethodGet, "/api/v1/favorites?page=2&page_size=1", nil, alice.Token)
+	var page2 struct {
+		Items []postView `json:"items"`
+	}
+	_ = json.Unmarshal(w2.Body.Bytes(), &page2)
+	if len(page2.Items) != 1 || page2.Items[0].ID != p1.ID {
+		t.Errorf("page2/page_size1 = %d 条, want [p1]", len(page2.Items))
+	}
+
+	// 取藏 p2 → 列表只剩 p1
+	if w := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/favorites?post_id=%d", p2.ID), nil, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("unfavorite p2 = %d", w.Code)
+	}
+	w3 := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, alice.Token)
+	var after struct {
+		Items []postView `json:"items"`
+	}
+	_ = json.Unmarshal(w3.Body.Bytes(), &after)
+	if len(after.Items) != 1 || after.Items[0].ID != p1.ID {
+		t.Errorf("取藏后 = %d 条, want [p1]", len(after.Items))
+	}
+
+	// 空态信封：无收藏的 bob → "items":[] 而非 null（评审 D2 协议层断言）
+	w4 := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, bob.Token)
+	if w4.Code != http.StatusOK {
+		t.Fatalf("bob GET /favorites = %d", w4.Code)
+	}
+	if !bytes.Contains(w4.Body.Bytes(), []byte(`"items":[]`)) {
+		t.Errorf("空收藏 body = %s, want 含 \"items\":[]", w4.Body.String())
+	}
+	if bytes.Contains(w4.Body.Bytes(), []byte(`"items":null`)) {
+		t.Errorf("空收藏 body = %s, 不得出现 \"items\":null", w4.Body.String())
+	}
+
+	// 游客 → 401
+	if w := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("游客 GET /favorites = %d, want 401", w.Code)
 	}
 }

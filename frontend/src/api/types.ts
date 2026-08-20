@@ -83,6 +83,22 @@ export interface PostList {
   page_size: number
 }
 
+// 通用分页信封（#23；既有 PostList/NotificationList 暂不归并，新列表代码用 Page<T>）
+export interface Page<T> {
+  items: T[]
+  page: number
+  page_size: number
+}
+
+// 我关注的用户行（#23；最小画像字段，后端刻意不返回 Email/Role）
+export interface FollowedUser {
+  id: number
+  username: string
+  avatar_url: string | null
+  bio: string | null
+  viewer?: FollowViewer
+}
+
 export interface UserProfile {
   id: number
   username: string

@@ -13,6 +13,7 @@
 - **密码存储**：仅存 bcrypt hash，永不存明文、永不返回 hash。
 - **角色映射（一致性修正，计划已记录）**：DB 存 `member/moderator/admin`；`Service` 返回与 JWT 载荷均为对外取值 `user/moderator/admin`（`member→user` 由本包在边界映射）。`guest` 仅前端状态，永不入库、不入 token。
 - **软删**：users 永不硬删（`deleted_at`）；逻辑外键永不因删除失联。
+- **我的关注用户列表（#23）**：`ListFollowedUsers` 按关注时间倒序 + 分页，需登录（游客 `ErrAuthRequired`）；行模型 `UserFollowView` 仅暴露最小画像字段（username/avatar_url/bio + `viewer.following`），不泄 Email/Role、不带多余计数。
 
 ## 调用顺序约束（Ordering）
 
@@ -31,6 +32,7 @@
 | `ErrBanned` | 账号被封禁 | 401（保持统一，不泄露账号状态） |
 | `ErrNotFound` | 目标用户不存在 | 404 |
 | `ErrSelfFollow` / `ErrAlreadyFollow` | 关注非法 | 400 / 409 |
+| `ErrAuthRequired` | 我的关注用户列表游客（#23） | 401 |
 
 除上述哨兵外，其余 error 均为基础设施故障（DB 等），调用方应记录日志并按 500 处理。
 

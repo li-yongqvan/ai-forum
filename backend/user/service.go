@@ -64,6 +64,7 @@ var (
 	ErrNotFound      = errors.New("user: 目标不存在")
 	ErrSelfFollow    = errors.New("user: 不能关注自己")
 	ErrAlreadyFollow = errors.New("user: 已关注该用户")
+	ErrAuthRequired  = errors.New("user: 需要登录") // #23 收藏/关注列表游客
 )
 
 // ---- Service 接口（粗粒度命令 + 读模型查询，#4/#7） ----
@@ -87,6 +88,8 @@ type Service interface {
 	FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error)
 	// PublicProfile 返回用户公开资料（不含邮箱/角色等隐私字段）。
 	PublicProfile(ctx context.Context, in PublicProfileCmd) (PublicProfileView, error)
+	// ListFollowedUsers 返回我关注的用户，按关注时间倒序 + 分页（#23，需登录）。
+	ListFollowedUsers(ctx context.Context, in ListFollowedUsersQuery) ([]UserFollowView, error)
 }
 
 // PublicProfileCmd 公开资料查询。
@@ -105,6 +108,28 @@ type PublicProfileView struct {
 	Following      bool
 	FollowerCount  int
 	FollowingCount int
+}
+
+// ListFollowedUsersQuery 我关注的用户列表（#23）。
+type ListFollowedUsersQuery struct {
+	ViewerID int64 // 0 = 游客
+	Page     int
+	PageSize int
+}
+
+// UserFollowView 关注列表的用户行（最小画像字段；刻意不复用 UserView/PublicProfileView——
+// UserView 含 Email/Role 不可外泄，PublicProfileView 带多余计数）。
+type UserFollowView struct {
+	ID        int64             `json:"id"`
+	Username  string            `json:"username"`
+	AvatarURL *string           `json:"avatar_url"`
+	Bio       *string           `json:"bio"`
+	Viewer    *UserFollowViewer `json:"viewer,omitempty"`
+}
+
+// UserFollowViewer 关注行的登录态（恒 true：列表即"我关注的"）。
+type UserFollowViewer struct {
+	Following bool `json:"following"`
 }
 
 // ---- 实现 ----
@@ -261,6 +286,44 @@ func (s *service) PublicProfile(ctx context.Context, in PublicProfileCmd) (Publi
 		v.Following = f
 	}
 	return v, nil
+}
+
+// normalizePage 统一分页归一化（与 content 包各持一份，包间不共享工具函数：#4 深模块）。
+func normalizePage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+// ListFollowedUsers 返回我关注的用户，按关注时间倒序 + 分页（#23）。
+func (s *service) ListFollowedUsers(ctx context.Context, in ListFollowedUsersQuery) ([]UserFollowView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	us, err := s.repo.ListFollowedUsers(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	// make([]T,0,n)：空结果序列化为 "items":[] 而非 null（信封契约，评审 D2）
+	views := make([]UserFollowView, 0, len(us))
+	for _, u := range us {
+		views = append(views, UserFollowView{
+			ID:        u.ID,
+			Username:  u.Username,
+			AvatarURL: u.AvatarURL,
+			Bio:       u.Bio,
+			Viewer:    &UserFollowViewer{Following: true},
+		})
+	}
+	return views, nil
 }
 
 // Ban 封禁用户。审计动作（moderation_actions）由 moderation 包在治理闭环中追加。

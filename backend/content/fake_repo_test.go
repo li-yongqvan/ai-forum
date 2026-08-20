@@ -18,8 +18,11 @@ type fakeRepo struct {
 	comments map[int64]*Comment
 	likes    map[string]*Like // key: "type:id:user"
 	favs     map[string]*Favorite
-	followsB map[[2]int64]bool
-	followsT map[[2]int64]bool
+	followsB map[[2]int64]time.Time
+	followsT map[[2]int64]time.Time
+
+	// 单调递增关系时钟：关注/收藏时间严格递增，排序断言确定性成立（评审 §七.3）。
+	followClock time.Time
 
 	nextPostID    int64
 	nextCommentID int64
@@ -29,16 +32,23 @@ type fakeRepo struct {
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		boards:   map[int64]*Board{},
-		topics:   map[int64]*Topic{},
-		posts:    map[int64]*Post{},
-		comments: map[int64]*Comment{},
-		likes:    map[string]*Like{},
-		favs:     map[string]*Favorite{},
-		followsB: map[[2]int64]bool{},
-		followsT: map[[2]int64]bool{},
-		nextPostID: 1, nextCommentID: 1, nextLikeID: 1, nextFavID: 1,
+		boards:      map[int64]*Board{},
+		topics:      map[int64]*Topic{},
+		posts:       map[int64]*Post{},
+		comments:    map[int64]*Comment{},
+		likes:       map[string]*Like{},
+		favs:        map[string]*Favorite{},
+		followsB:    map[[2]int64]time.Time{},
+		followsT:    map[[2]int64]time.Time{},
+		followClock: time.Now(),
+		nextPostID:  1, nextCommentID: 1, nextLikeID: 1, nextFavID: 1,
 	}
+}
+
+// nextFollowTime 返回严格递增的关系时间（每次调用 +1ms，保证同一测试内先后关系可排序）。
+func (f *fakeRepo) nextFollowTime() time.Time {
+	f.followClock = f.followClock.Add(time.Millisecond)
+	return f.followClock
 }
 
 // ---- 预置辅助 ----
@@ -327,8 +337,17 @@ func (f *fakeRepo) ListLikedPostIDs(ctx context.Context, userID int64, postIDs [
 func (f *fakeRepo) CreateFavorite(ctx context.Context, fl *Favorite) error {
 	fl.ID = f.nextFavID
 	f.nextFavID++
+	if fl.CreatedAt.IsZero() {
+		fl.CreatedAt = f.nextFollowTime()
+	}
 	f.favs[likeKey("fav", fl.PostID, fl.UserID)] = fl
 	return nil
+}
+
+// seedFavorite 以显式时间预置收藏（排序测试用确定性时间）。
+func (f *fakeRepo) seedFavorite(userID, postID int64, at time.Time) {
+	f.favs[likeKey("fav", postID, userID)] = &Favorite{ID: f.nextFavID, UserID: userID, PostID: postID, CreatedAt: at}
+	f.nextFavID++
 }
 
 func (f *fakeRepo) DeleteFavorite(ctx context.Context, userID, postID int64) error {
@@ -364,7 +383,7 @@ func (f *fakeRepo) ListFavedPostIDs(ctx context.Context, userID int64, postIDs [
 // ---- follows（board / topic） ----
 
 func (f *fakeRepo) CreateFollowBoard(ctx context.Context, fl *FollowBoard) error {
-	f.followsB[[2]int64{fl.FollowerID, fl.BoardID}] = true
+	f.followsB[[2]int64{fl.FollowerID, fl.BoardID}] = f.nextFollowTime()
 	return nil
 }
 
@@ -374,7 +393,8 @@ func (f *fakeRepo) DeleteFollowBoard(ctx context.Context, followerID, boardID in
 }
 
 func (f *fakeRepo) FollowBoardExists(ctx context.Context, followerID, boardID int64) (bool, error) {
-	return f.followsB[[2]int64{followerID, boardID}], nil
+	_, ok := f.followsB[[2]int64{followerID, boardID}]
+	return ok, nil
 }
 
 func (f *fakeRepo) ListFollowedBoardIDs(ctx context.Context, followerID int64) ([]int64, error) {
@@ -388,7 +408,7 @@ func (f *fakeRepo) ListFollowedBoardIDs(ctx context.Context, followerID int64) (
 }
 
 func (f *fakeRepo) CreateFollowTopic(ctx context.Context, fl *FollowTopic) error {
-	f.followsT[[2]int64{fl.FollowerID, fl.TopicID}] = true
+	f.followsT[[2]int64{fl.FollowerID, fl.TopicID}] = f.nextFollowTime()
 	return nil
 }
 
@@ -398,7 +418,8 @@ func (f *fakeRepo) DeleteFollowTopic(ctx context.Context, followerID, topicID in
 }
 
 func (f *fakeRepo) FollowTopicExists(ctx context.Context, followerID, topicID int64) (bool, error) {
-	return f.followsT[[2]int64{followerID, topicID}], nil
+	_, ok := f.followsT[[2]int64{followerID, topicID}]
+	return ok, nil
 }
 
 func (f *fakeRepo) ListFollowedTopicIDs(ctx context.Context, followerID int64) ([]int64, error) {
@@ -409,6 +430,109 @@ func (f *fakeRepo) ListFollowedTopicIDs(ctx context.Context, followerID int64) (
 		}
 	}
 	return out, nil
+}
+
+// ---- 收藏/关注列表（#23，fake 实现：跳过软删、按关系时间倒序 + id 决胜、分页） ----
+
+func (f *fakeRepo) ListFavoritedPosts(ctx context.Context, userID int64, offset, limit int) ([]*Post, error) {
+	type item struct {
+		post *Post
+		at   time.Time
+		id   int64
+	}
+	items := make([]item, 0)
+	for _, fl := range f.favs {
+		if fl.UserID != userID {
+			continue
+		}
+		p, ok := f.posts[fl.PostID]
+		if !ok || p.DeletedAt.Valid {
+			continue // 软删帖子不出现在收藏列表（对应 GORM 主表 deleted_at IS NULL）
+		}
+		items = append(items, item{post: p, at: fl.CreatedAt, id: fl.ID})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].at.Equal(items[j].at) {
+			return items[i].at.After(items[j].at)
+		}
+		return items[i].id > items[j].id
+	})
+	out := make([]*Post, 0, len(items))
+	for _, it := range slicePage(items, offset, limit) {
+		out = append(out, it.post)
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) ListFollowedBoards(ctx context.Context, followerID int64, offset, limit int) ([]*Board, error) {
+	type item struct {
+		board *Board
+		at    time.Time
+	}
+	items := make([]item, 0)
+	for k, at := range f.followsB {
+		if k[0] != followerID {
+			continue
+		}
+		b, ok := f.boards[k[1]]
+		if !ok || b.DeletedAt.Valid {
+			continue
+		}
+		items = append(items, item{board: b, at: at})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].at.Equal(items[j].at) {
+			return items[i].at.After(items[j].at)
+		}
+		return items[i].board.ID > items[j].board.ID
+	})
+	out := make([]*Board, 0, len(items))
+	for _, it := range slicePage(items, offset, limit) {
+		out = append(out, it.board)
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) ListFollowedTopics(ctx context.Context, followerID int64, offset, limit int) ([]*Topic, error) {
+	type item struct {
+		topic *Topic
+		at    time.Time
+	}
+	items := make([]item, 0)
+	for k, at := range f.followsT {
+		if k[0] != followerID {
+			continue
+		}
+		t, ok := f.topics[k[1]]
+		if !ok || t.DeletedAt.Valid {
+			continue
+		}
+		items = append(items, item{topic: t, at: at})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].at.Equal(items[j].at) {
+			return items[i].at.After(items[j].at)
+		}
+		return items[i].topic.ID > items[j].topic.ID
+	})
+	out := make([]*Topic, 0, len(items))
+	for _, it := range slicePage(items, offset, limit) {
+		out = append(out, it.topic)
+	}
+	return out, nil
+}
+
+// slicePage 应用 offset/limit 分页（与 fake ListPosts 的内联分页语义一致）。
+func slicePage[T any](items []T, offset, limit int) []T {
+	start := offset
+	if start > len(items) {
+		start = len(items)
+	}
+	end := len(items)
+	if limit > 0 && start+limit < len(items) {
+		end = start + limit
+	}
+	return items[start:end]
 }
 
 // ---- 辅助 ----

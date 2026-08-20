@@ -110,6 +110,27 @@ type ListFeedQuery struct {
 	PageSize int
 }
 
+// ListFavoritesQuery 我收藏的帖子列表（#23）。
+type ListFavoritesQuery struct {
+	ViewerID int64 // 0 = 游客
+	Page     int
+	PageSize int
+}
+
+// ListFollowedBoardsQuery 我关注的板块列表（#23）。
+type ListFollowedBoardsQuery struct {
+	ViewerID int64
+	Page     int
+	PageSize int
+}
+
+// ListFollowedTopicsQuery 我关注的话题列表（#23）。
+type ListFollowedTopicsQuery struct {
+	ViewerID int64
+	Page     int
+	PageSize int
+}
+
 type GetPostQuery struct {
 	PostID   int64
 	ViewerID int64 // 0 = 游客
@@ -199,6 +220,11 @@ type Service interface {
 	ListBoards(ctx context.Context, viewerID int64) ([]BoardView, error)
 	ListTopics(ctx context.Context, viewerID int64, boardID *int64) ([]TopicView, error)
 	CountPostsByAuthor(ctx context.Context, authorID int64) (int, error)
+
+	// 我的收藏/关注列表（#23，按关系时间倒序 + 分页，均需登录）
+	ListFavorites(ctx context.Context, in ListFavoritesQuery) ([]PostView, error)
+	ListFollowedBoards(ctx context.Context, in ListFollowedBoardsQuery) ([]BoardView, error)
+	ListFollowedTopics(ctx context.Context, in ListFollowedTopicsQuery) ([]TopicView, error)
 
 	DeletePost(ctx context.Context, in DeletePostCmd) error
 	DeleteComment(ctx context.Context, in DeleteCommentCmd) error
@@ -601,6 +627,78 @@ func (s *service) ListTopics(ctx context.Context, viewerID int64, boardID *int64
 // CountPostsByAuthor 返回某作者的帖子数（未删除，供用户主页资料卡）。
 func (s *service) CountPostsByAuthor(ctx context.Context, authorID int64) (int, error) {
 	return s.repo.CountPostsByAuthor(ctx, authorID)
+}
+
+// normalizePage 统一分页归一化（与 ListFeed 内联逻辑一致；page 从 1 起，pageSize 默认 20、上限 100）。
+func normalizePage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+// ListFavorites 返回我收藏的帖子，按收藏时间倒序 + 分页（#23）。复用 postViews 读模型。
+func (s *service) ListFavorites(ctx context.Context, in ListFavoritesQuery) ([]PostView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	posts, err := s.repo.ListFavoritedPosts(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	return s.postViews(ctx, posts, in.ViewerID)
+}
+
+// ListFollowedBoards 返回我关注的板块，按关注时间倒序 + 分页（#23）。
+func (s *service) ListFollowedBoards(ctx context.Context, in ListFollowedBoardsQuery) ([]BoardView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	boards, err := s.repo.ListFollowedBoards(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	// make([]T,0,n)：空结果序列化为 "items":[] 而非 null（信封契约，评审 D2）
+	views := make([]BoardView, 0, len(boards))
+	for _, b := range boards {
+		views = append(views, BoardView{
+			ID:          b.ID,
+			Name:        b.Name,
+			Description: b.Description,
+			Viewer:      &FollowViewer{Following: true},
+		})
+	}
+	return views, nil
+}
+
+// ListFollowedTopics 返回我关注的话题，按关注时间倒序 + 分页（#23）。
+func (s *service) ListFollowedTopics(ctx context.Context, in ListFollowedTopicsQuery) ([]TopicView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	topics, err := s.repo.ListFollowedTopics(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]TopicView, 0, len(topics))
+	for _, t := range topics {
+		views = append(views, TopicView{
+			ID:      t.ID,
+			BoardID: t.BoardID,
+			Name:    t.Name,
+			Viewer:  &FollowViewer{Following: true},
+		})
+	}
+	return views, nil
 }
 
 // ---- 读模型组装 ----

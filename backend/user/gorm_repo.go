@@ -124,6 +124,29 @@ func (r *gormRepo) CountFollowing(ctx context.Context, followerID int64) (int, e
 	return int(n), err
 }
 
+// ListFollowedUsers 我关注的用户，按关注时间倒序 + 分页（#23）。
+// 显式 Select("user".users.*)：GORM 默认 SELECT * 会把 JOIN 表同名列（id/created_at）覆盖主表（列遮蔽）。
+// "user" 是保留字，JOIN/Select 均需双引号限定。
+func (r *gormRepo) ListFollowedUsers(ctx context.Context, followerID int64, offset, limit int) ([]*User, error) {
+	var users []*User
+	q := r.db.WithContext(ctx).
+		Model(&User{}).
+		Select(`"user".users.*`).
+		Joins(`JOIN "user".follows_users fu ON fu.target_id = "user".users.id AND fu.follower_id = ?`, followerID).
+		Order("fu.created_at DESC").
+		Order("fu.id DESC") // 同刻决胜，确定性
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 func mapNotFound(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound

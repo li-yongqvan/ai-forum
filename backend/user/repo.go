@@ -20,6 +20,8 @@ type Repo interface {
 	ListFollowedUserIDs(ctx context.Context, followerID int64) ([]int64, error)
 	CountFollowers(ctx context.Context, targetID int64) (int, error)
 	CountFollowing(ctx context.Context, followerID int64) (int, error)
+	// ListFollowedUsers 我关注的用户，按关注时间倒序 + 分页（#23，独立 JOIN 查询形态）。
+	ListFollowedUsers(ctx context.Context, followerID int64, offset, limit int) ([]*User, error)
 
 	// Tx 在单事务内执行 fn，fn 收到事务绑定的 Repo。供跨表原子写（如注册：建用户 + 标记邀请码）。
 	Tx(ctx context.Context, fn func(Repo) error) error

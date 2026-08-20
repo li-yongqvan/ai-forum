@@ -96,8 +96,10 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		authed.DELETE("/likes", ch.Unlike)
 		authed.POST("/favorites", ch.Favorite)
 		authed.DELETE("/favorites", ch.Unfavorite)
+		authed.GET("/favorites", ch.ListFavorites) // #23 我的收藏（按收藏时间倒序 + 分页）
 		authed.POST("/follows", fh.Follow)
 		authed.DELETE("/follows", fh.Unfollow)
+		authed.GET("/follows", fh.ListFollows) // #23 我关注的用户/板块/话题（target_type 分派）
 
 		// 通知中心（#32：需登录，#9 登录墙）
 		authed.GET("/notifications", nh.ListNotifications)

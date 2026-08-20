@@ -3,6 +3,8 @@ import type {
   Board,
   CommentTree,
   FollowTarget,
+  FollowTargetType,
+  Page,
   Post,
   PostList,
   Topic,
@@ -106,6 +108,30 @@ export function unfollow(t: FollowTarget) {
   return request('DELETE', `/follows?target_type=${t.target_type}&target_id=${t.target_id}`, undefined, {
     requireAuth: true,
   })
+}
+
+// ---- 我的收藏/关注列表（#23） ----
+
+export interface ListPageParams {
+  page?: number
+  pageSize?: number
+}
+
+// 我收藏的帖子（按收藏时间倒序，需登录）
+export function listFavorites(p: ListPageParams = {}) {
+  const qs = new URLSearchParams()
+  qs.set('page', String(p.page ?? 1))
+  qs.set('page_size', String(p.pageSize ?? 20))
+  return request<Page<Post>>('GET', `/favorites?${qs.toString()}`, undefined, { requireAuth: true })
+}
+
+// 我关注的用户/板块/话题（target_type 分派，按关注时间倒序，需登录）
+export function listFollows<T extends { id: number }>(targetType: FollowTargetType, p: ListPageParams = {}) {
+  const qs = new URLSearchParams()
+  qs.set('target_type', targetType)
+  qs.set('page', String(p.page ?? 1))
+  qs.set('page_size', String(p.pageSize ?? 20))
+  return request<Page<T>>('GET', `/follows?${qs.toString()}`, undefined, { requireAuth: true })
 }
 
 // ---- 用户 ----
