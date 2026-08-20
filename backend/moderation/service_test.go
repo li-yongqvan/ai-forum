@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -146,8 +147,9 @@ func TestHandleReportDismiss(t *testing.T) {
 	if len(repo.actions) != 0 {
 		t.Errorf("dismiss 不应落审计, got %d", len(repo.actions))
 	}
-	if len(notify.calls) != 0 {
-		t.Errorf("dismiss 不应发通知, got %d", len(notify.calls))
+	// IA §5.6「所有动作→通知举报人」：dismiss 也发结论通知（含 dismiss 结论句）
+	if len(notify.calls) != 1 || notify.calls[0].RecipientID != 101 || notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "未采取处理" {
+		t.Errorf("dismiss 应发结论通知, got %+v", notify.calls)
 	}
 }
 
@@ -212,6 +214,7 @@ func TestHandleReportFailures(t *testing.T) {
 		{"封禁留 #34", func(c *HandleReportCmd) { c.Action = ActionBan }, ErrInvalidAction},
 		{"非法动作", func(c *HandleReportCmd) { c.Action = "nuke" }, ErrInvalidAction},
 		{"delete_post 目标非 post", func(c *HandleReportCmd) { c.Action = ActionDeletePost; c.ReportID = cid }, ErrInvalidAction},
+		{"备注超 500（F5）", func(c *HandleReportCmd) { c.Note = strings.Repeat("长", 501) }, ErrInvalidAction},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

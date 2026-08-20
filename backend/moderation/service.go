@@ -264,6 +264,9 @@ func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
 	if !canModerate(in.OperatorRole) || !validAction(in.Action) {
 		return ErrInvalidAction
 	}
+	if len([]rune(in.Note)) > 500 { // F5：moderation_actions.reason VARCHAR(500)，领域不变量兜底
+		return ErrInvalidAction
+	}
 	r, err := s.repo.GetReportByID(ctx, in.ReportID)
 	if err != nil {
 		return err
@@ -329,10 +332,8 @@ func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
 		return err
 	}
 
-	// ---- 提交后：report_result 通知举报人（D2）；失败打日志不回滚（S3） ----
-	if in.Action != ActionDismiss {
-		s.notifyReportResult(ctx, r, in.Action)
-	}
+	// ---- 提交后：report_result 通知举报人（D2/IA §5.6「所有动作→通知举报人」，含 dismiss 结论）；失败打日志不回滚（S3） ----
+	s.notifyReportResult(ctx, r, in.Action)
 	return nil
 }
 

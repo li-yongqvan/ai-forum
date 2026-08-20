@@ -183,9 +183,10 @@ func TestModerationHandlingFlow(t *testing.T) {
 	if pendingCount() != 0 {
 		t.Errorf("dismiss 后 pending = %d, want 0", pendingCount())
 	}
-	// dismiss 不发通知
-	if n := bobNotifs(); len(n) != 0 {
-		t.Errorf("dismiss 后应无通知, got %d", len(n))
+	// IA §5.6「所有动作→通知举报人」：dismiss 也发结论通知（未采取处理）
+	notifs := bobNotifs()
+	if len(notifs) != 1 || notifs[0].Type != "report_result" || notifs[0].TargetTitle == nil || *notifs[0].TargetTitle != "未采取处理" {
+		t.Errorf("dismiss 应发结论通知, got %+v", notifs)
 	}
 	// 重复处理 → 400（已结案）
 	if code := handle(rep1.ID, "dismiss", ""); code != http.StatusBadRequest {
@@ -213,7 +214,7 @@ func TestModerationHandlingFlow(t *testing.T) {
 		t.Errorf("delete_post 审计行数 = %d, want 1", auditN)
 	}
 	// 通知举报人：report_result + 结论「内容已删除」
-	notifs := bobNotifs()
+	notifs = bobNotifs()
 	if len(notifs) == 0 || notifs[0].Type != "report_result" || notifs[0].TargetTitle == nil || *notifs[0].TargetTitle != "内容已删除" {
 		t.Errorf("report_result 通知 = %+v", notifs)
 	}

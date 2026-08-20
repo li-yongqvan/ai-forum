@@ -74,7 +74,6 @@ type CommentView struct {
 // PostMetaView 帖子最小元数据（治理域 enrich/处理用，#33 S4：复用 repo.GetPostByID，
 // 不触发 view_count 自增——GetPost 有浏览副作用，不能用于治理侧查询）。
 type PostMetaView struct {
-	ID       int64
 	AuthorID int64
 	Title    string
 }
@@ -481,7 +480,7 @@ func (s *service) GetPostMeta(ctx context.Context, id int64) (PostMetaView, erro
 	if err != nil {
 		return PostMetaView{}, ErrPostNotFound
 	}
-	return PostMetaView{ID: p.ID, AuthorID: p.AuthorID, Title: p.Title}, nil
+	return PostMetaView{AuthorID: p.AuthorID, Title: p.Title}, nil
 }
 
 // GetComment 按 id 返回单条评论读模型（#33 S4：治理域 enrich 需按 comment id 读，现有 GetCommentTree 只按 post id 聚合）。

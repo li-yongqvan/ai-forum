@@ -40,6 +40,17 @@
 - `Repo` 依赖注入；schema `moderation` 已迁移（含 0006 `reporter_note` 列）。
 - `ContentGateway`/`UserGateway`/`Notifier` 由组合根注入（`httpapi.NewContentGateway/NewUserGateway/NewNotifier`）。
 
+## HTTP API 面（#33，S7 补全）
+
+| 方法 | 路径 | 组/权限 | 请求 | 成功响应 |
+|---|---|---|---|---|
+| POST | `/api/v1/reports` | authed（登录墙） | `{target_type, target_id, reason, note?}`（reason 六枚举） | 201 `{"id": <举报id>, "message":"ok"}` |
+| GET | `/api/v1/moderation/reports?status=&page=&page_size=` | mod（`RequireRole("moderator","admin")`） | query 缺省 status=pending, page=1, page_size=20（服务端钳 ≤100） | 200 `{"items":[ReportView],"page":N,"page_size":N}` |
+| GET | `/api/v1/moderation/reports/count?status=` | mod | — | 200 `{"count": N}` |
+| POST | `/api/v1/moderation/reports/:id/handle` | mod | `{action, note?}`（note ≤500；action ∈ dismiss/delete_post/delete_comment/warn） | 200 `{"message":"ok"}` |
+
+`ReportView` 含 enrich 字段 `reporter_username`/`target_title`（best-effort，目标已删时缺省）；`reason` 只存枚举，举报人备注在 `reporter_note`。
+
 ## 性能特征（Performance）
 
 - 处理为单事务内 1–2 条写入；举报列表按 `status` 索引查询。
