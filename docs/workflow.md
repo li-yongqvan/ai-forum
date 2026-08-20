@@ -45,7 +45,7 @@
 - **唯一状态机 = 地图 issue #1** 的 Roadmap / 开放项。新功能先落 ticket（issue），再进 Roadmap。
 - **优先级原则**：价值 × 学习目标（项目是学习导向，见地图 Destination）。
 - **当前顺序**（首发后首批）：
-  1. **#26 部署可靠性：GHCR → 阿里云 ACR**（已定方案，见 §9.2；依赖用户开通 ACR 给凭证）
+  1. **#26 部署可靠性：镜像交付改 CI 内 scp 镜像包（A' 方案，已落地）**（见 §9.2；不依赖任何 registry 账号）
   2. **前端单测进 CI**（`continue-on-error` 过渡 → 转阻塞，见 §7）
   3. **#23 收藏/关注列表**（见 §12 walkthrough）
   4. 下一批按「价值 × 学习目标」排，朝组合 B 微服务演进。
@@ -154,23 +154,21 @@
 
 ### 9.1 CI deploy job 流程（当前）
 push main → `test`(阻塞) → `lint`(非阻塞) → `deploy`：
-前端 `npm ci && npm run build` → scp `frontend/dist/*` 到服务器 `~/ai-forum/frontend/dist`（`strip_components: 2`）→ 推 GHCR 镜像 → ssh 脚本：`git pull` → `mkdir -p frontend/dist uploads` → `docker compose pull api` → `up -d` → `nginx -t && nginx -s reload` → `image prune` → `compose ps`。
+前端 `npm ci && npm run build` → scp `frontend/dist/*` 到服务器 `~/ai-forum/frontend/dist`（`strip_components: 2`）→ 推 GHCR 镜像（冗余备份）→ `docker save | gzip` 出镜像包 → scp 到服务器 `/tmp` → ssh 脚本：`git pull` → `mkdir -p frontend/dist uploads` → `docker load -i /tmp/api-image.tar.gz` → `up -d --force-recreate api` → `nginx -t && nginx -s reload` → `image prune` → `compose ps`。
 
 **门控**：secrets → job env → step `if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'`。**secrets 永不进 if**（job/step 皆禁，白名单：job 级 `github, needs, vars, inputs`；step 级含 `env`），本地校验 `bash scripts/check-workflows.sh`。
 
-### 9.2 镜像源：GHCR → 阿里云 ACR（#26 方案，待落地）
-**问题**：服务器→GHCR 下载 ~KB/s（实测 573B/s、2.6KB/s 两档），PR#21 曾两次部署超时。
-**方案**：
-1. 用户开通 ACR 个人版 → 建命名空间 + 仓库 `ai-forum-api` → 提供 Registry 地址/用户名/密码。
-2. GitHub secrets：`ACR_REGISTRY` / `ACR_USERNAME` / `ACR_PASSWORD`。
-3. `deploy.yml`：deploy job env 加 ACR secrets → login ACR → build-push 加 ACR tag（保留 GHCR tag 作冗余）。
-4. **服务器侧**：
-   - **镜像可见性决策**：ACR 镜像**公开**（可匿名拉，同 GHCR 现况）→ 服务器免 `docker login`，零凭证面；或**私有** → 服务器 `docker login <registry>`，凭证持久化 `~/.docker/config.json`（保管方式须明确）。**公开为 lean 首选**。
-   - `compose.yml` api 镜像源改 ACR；服务器 `docker compose pull api` 快拉。
-5. **量化验收**（#26 关闭条件）：deploy 步 ≤2min（对照现状 6m49s/1MB）；连续 3 次发版零超时。
-6. 镜像名 `li-yongqvan`（**qvan**，勿打成 quan）。
+### 9.2 镜像交付：CI 内 scp 镜像包（A' 方案，#26 定案）
+**问题**：服务器→GHCR 下载 ~KB/s（实测 573B/s、2.6KB/s 两档），PR#21 曾两次部署超时。原定 GHCR→阿里云 ACR，但**共享服务器无法登录其阿里云账号**（ACR 需该账号开通），故改为 A'。
 
-**降级路径**（ACR 被外部凭证卡住时）：自动化已验证的人工 workaround——CI 内 `docker build → docker save → scp → 服务器 docker load`。带宽走 SSH（与 scp 前端同链路，已验证可达）；不新增凭证面。缺点：全量传输比分层拉取慢、镜像历史不在 registry。作降级而非替代。
+**A' 方案（已落地 deploy.yml）**：
+- CI 构建镜像（build-push-action `load: true` 同时进 runner daemon）→ 推 GHCR 作冗余备份 → `docker save | gzip`（实测 48.5MB → **13MB**）→ `scp api-image.tar.gz` 到服务器 `/tmp` → 服务器 `docker load` → `compose up -d --force-recreate api`。
+- **零外部依赖**：不碰 daemon、不需任何 registry 账号、不依赖 sudo；SSH 链路与前端 scp 同一条（已验证可达）。实测本机→服务器 SSH ~780KB/s，13MB ≈ 17s，比 GHCR 快约 300 倍。
+- **compose.yml 无需改**：镜像 tag 保持 `ghcr.io/li-yongqvan/ai-forum-api:latest`，load 进去即被 compose 识别。
+- **量化验收**（#26 关闭条件）：CI 部署步 ≤3min（对照 PR#21 的 11m29s 超时）；连续 3 次发版零超时。
+- 注意事项：CI runner（美国）→阿里云带宽可能略低于本机实测，首次部署实测确认；`appleboy/scp-action` 的 `source` 需相对 `$GITHUB_WORKSPACE`。
+
+**不选其他路径的原因**：ACR 需服务器阿里云账号（不可得）；服务器本地构建需 golang 基础镜像（Docker Hub 被墙、服务器无该镜像）；改 daemon 镜像加速需 sudo（无 sudo）。
 
 ### 9.3 规划项：PR 阶段功能 CI（#26 后并入）
 见 §8.5。目标：错误在合并前暴露，消掉「合并→修→再合并」返工。
@@ -242,4 +240,4 @@ curl http://122.51.233.225:8888/api/v1/posts
 
 ---
 
-*本文档为持久化 SOP。变更流水线（ACR 落地/PR CI/前端单测转正）后，必须同步本文档对应节。*
+*本文档为持久化 SOP。变更流水线（镜像交付 A' 落地/PR CI/前端单测转正）后，必须同步本文档对应节。*
