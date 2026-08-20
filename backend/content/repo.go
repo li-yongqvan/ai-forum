@@ -64,4 +64,10 @@ type Repo interface {
 	DeleteFollowTopic(ctx context.Context, followerID, topicID int64) error
 	FollowTopicExists(ctx context.Context, followerID, topicID int64) (bool, error)
 	ListFollowedTopicIDs(ctx context.Context, followerID int64) ([]int64, error)
+
+	// 收藏/关注列表（#23：按关系时间倒序 + 分页；独立 JOIN 查询形态，
+	// 非 ListFavedPostIDs 这类"给定 postIDs 求交集"的掩码辅助）
+	ListFavoritedPosts(ctx context.Context, userID int64, offset, limit int) ([]*Post, error)
+	ListFollowedBoards(ctx context.Context, followerID int64, offset, limit int) ([]*Board, error)
+	ListFollowedTopics(ctx context.Context, followerID int64, offset, limit int) ([]*Topic, error)
 }

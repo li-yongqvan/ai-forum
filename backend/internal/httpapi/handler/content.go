@@ -382,3 +382,22 @@ func (h *ContentHandler) Unfavorite(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
+
+// ListFavorites GET /api/v1/favorites（需登录；我收藏的帖子，按收藏时间倒序，#23）
+func (h *ContentHandler) ListFavorites(c *gin.Context) {
+	claims, ok := middleware.Identity(c)
+	if !ok {
+		respondError(c, http.StatusUnauthorized, "需要登录")
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	views, err := h.svc.ListFavorites(c.Request.Context(), content.ListFavoritesQuery{
+		ViewerID: claims.UserID, Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		respondContentError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
+}

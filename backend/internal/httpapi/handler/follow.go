@@ -121,9 +121,50 @@ func (h *FollowHandler) Unfollow(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
 
+// ListFollows GET /api/v1/follows?target_type=user|board|topic（需登录；我关注的用户/板块/话题，
+// 按关注时间倒序 + 分页，#23）。target_type 分派与 POST/DELETE /follows 同构。
+func (h *FollowHandler) ListFollows(c *gin.Context) {
+	claims, ok := middleware.Identity(c)
+	if !ok {
+		respondError(c, http.StatusUnauthorized, "需要登录")
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	ctx := c.Request.Context()
+	switch c.Query("target_type") {
+	case "user":
+		views, err := h.users.ListFollowedUsers(ctx, user.ListFollowedUsersQuery{ViewerID: claims.UserID, Page: page, PageSize: pageSize})
+		if err != nil {
+			respondFollowError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
+	case "board":
+		views, err := h.content.ListFollowedBoards(ctx, content.ListFollowedBoardsQuery{ViewerID: claims.UserID, Page: page, PageSize: pageSize})
+		if err != nil {
+			respondFollowError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
+	case "topic":
+		views, err := h.content.ListFollowedTopics(ctx, content.ListFollowedTopicsQuery{ViewerID: claims.UserID, Page: page, PageSize: pageSize})
+		if err != nil {
+			respondFollowError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
+	default:
+		// 缺参与非法值统一 400（与 POST/DELETE 的 default 分支对齐）
+		respondError(c, http.StatusBadRequest, "target_type 非法（user|board|topic）")
+	}
+}
+
 // respondFollowError 映射 user/content 两包的关注相关错误。
 func respondFollowError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, user.ErrAuthRequired), errors.Is(err, content.ErrAuthRequired):
+		respondError(c, http.StatusUnauthorized, "需要登录")
 	case errors.Is(err, user.ErrNotFound), errors.Is(err, content.ErrBoardNotFound),
 		errors.Is(err, content.ErrTopicNotFound):
 		respondError(c, http.StatusNotFound, "目标不存在")

@@ -337,6 +337,72 @@ func (r *gormRepo) ListFollowedTopicIDs(ctx context.Context, followerID int64) (
 	return ids, err
 }
 
+// ---- 收藏/关注列表（#23） ----
+
+// 列表按关系时间倒序（favorites/follows_*.created_at），需 JOIN 关系表而非 PostQuery 子查询
+// （PostQuery 只能按帖子 created_at 排序）。显式 Select(主表.*)：GORM 默认 SELECT * 会把
+// JOIN 表同名列（id/created_at）覆盖主表字段（列遮蔽），必须限定主表列。
+
+func (r *gormRepo) ListFavoritedPosts(ctx context.Context, userID int64, offset, limit int) ([]*Post, error) {
+	var posts []*Post
+	q := r.db.WithContext(ctx).
+		Model(&Post{}).
+		Select("content.posts.*").
+		Joins("JOIN content.favorites f ON f.post_id = content.posts.id AND f.user_id = ?", userID).
+		Order("f.created_at DESC").
+		Order("f.id DESC") // 同刻决胜，确定性
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&posts).Error; err != nil {
+		return nil, err
+	}
+	return posts, nil
+}
+
+func (r *gormRepo) ListFollowedBoards(ctx context.Context, followerID int64, offset, limit int) ([]*Board, error) {
+	var boards []*Board
+	q := r.db.WithContext(ctx).
+		Model(&Board{}).
+		Select("content.boards.*").
+		Joins("JOIN content.follows_boards fb ON fb.board_id = content.boards.id AND fb.follower_id = ?", followerID).
+		Order("fb.created_at DESC").
+		Order("fb.id DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&boards).Error; err != nil {
+		return nil, err
+	}
+	return boards, nil
+}
+
+func (r *gormRepo) ListFollowedTopics(ctx context.Context, followerID int64, offset, limit int) ([]*Topic, error) {
+	var topics []*Topic
+	q := r.db.WithContext(ctx).
+		Model(&Topic{}).
+		Select("content.topics.*").
+		Joins("JOIN content.follows_topics ft ON ft.topic_id = content.topics.id AND ft.follower_id = ?", followerID).
+		Order("ft.created_at DESC").
+		Order("ft.id DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&topics).Error; err != nil {
+		return nil, err
+	}
+	return topics, nil
+}
+
 // ---- 辅助 ----
 
 // countRow 是分组 COUNT 的统一扫描目标（id = 目标 id，cnt = 计数）。
