@@ -80,11 +80,19 @@ jobs:
         with:
           context: ./backend
           push: true
+          load: true # A'：镜像同时 load 进 runner 本地 daemon，供下一步 docker save + gzip → scp → 服务器 load（替代服务器 GHCR pull）
           tags: |
             ghcr.io/li-yongqvan/ai-forum-api:latest
             ghcr.io/li-yongqvan/ai-forum-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Save and compress API image
+        # A'：镜像 save + gzip（~13MB），scp 直传服务器 load；服务器不再从 GHCR 拉（~2.6KB/s 曾超时）
+        # 镜像 tag 保持 ghcr.io/li-yongqvan/ai-forum-api:latest，compose.yml 无需改
+        # 注：scp-action 的 source 需相对 $GITHUB_WORKSPACE，故输出到 ./api-image.tar.gz
+        run: |
+          docker save ghcr.io/li-yongqvan/ai-forum-api:latest | gzip -1 > api-image.tar.gz
+          ls -lh api-image.tar.gz
       - name: Upload frontend to server
         # scp 直传容器 nginx 静态根（#8 变体：共享服务器无 sudo → ~/ai-forum/frontend/dist，web 容器挂载）
         # strip_components: 2 去掉 frontend/dist 前缀，dist 内容直落 web root
@@ -97,6 +105,16 @@ jobs:
           source: frontend/dist/*
           target: /home/liyongquan/ai-forum/frontend/dist
           strip_components: 2
+      - name: Upload API image to server
+        # A'：压缩镜像包 scp 直传服务器 /tmp（走 SSH，同 frontend scp 链路）；服务器 docker load 后 compose up
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          source: api-image.tar.gz
+          target: /tmp
       - name: Deploy to server
         # 未配 SSH secrets 或 DEPLOY_ENABLED!=true 时仅跳过部署步；镜像仍正常推 GHCR
         if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
@@ -110,8 +128,8 @@ jobs:
             cd ~/ai-forum
             git pull origin main
             mkdir -p frontend/dist uploads   # 自愈：目录被误删时先以部署用户重建，防 docker 以 root 重建后 scp 写不进
-            docker compose pull api          # v3.1：仅 api 走 GHCR（可达）；nginx/postgres 已预灌本地，up -d 用本地镜像
-            docker compose up -d
+            docker load -i /tmp/api-image.tar.gz   # A'：替代 docker compose pull api（GHCR ~2.6KB/s 曾超时）
+            docker compose up -d --force-recreate api   # 确保用新 load 的镜像重建 api 容器
             docker compose exec web nginx -t && docker compose exec web nginx -s reload   # web.conf bind mount 只更新文件不重建容器，需 reload 才生效（评审 Q5）
             docker image prune -f
             docker compose ps
