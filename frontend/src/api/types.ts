@@ -132,3 +132,24 @@ export interface AppNotification {
   is_read: boolean
   created_at: string
 }
+
+// ---- 举报/治理（#33） ----
+
+export type ReportTargetType = 'user' | 'post' | 'comment'
+export type ReportStatus = 'pending' | 'resolved' | 'dismissed'
+
+export interface Report {
+  id: number
+  reporter_id: number
+  reporter_username?: string
+  target_type: ReportTargetType
+  target_id: number
+  target_title?: string
+  reason: string
+  reporter_note?: string
+  status: ReportStatus
+  handler_id?: number
+  handled_at?: string
+  handling_note?: string
+  created_at: string
+}

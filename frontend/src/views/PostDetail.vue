@@ -15,6 +15,7 @@ import Avatar from '../components/Avatar.vue'
 import CommentTree from '../components/CommentTree.vue'
 import Empty from '../components/Empty.vue'
 import ImagePicker from '../components/ImagePicker.vue'
+import ReportSheet from '../components/ReportSheet.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -122,6 +123,9 @@ async function share() {
 
 // ---- 管理操作（角色显隐，v2 §3.1 轻量治理） ----
 const moreShow = ref(false)
+// ---- 举报（#33：帖子/评论入口） ----
+const reportShow = ref(false)
+const reportTarget = ref<{ type: 'post' | 'comment'; id: number } | null>(null)
 const moreActions = computed(() => {
   const p = post.value
   if (!p) return []
@@ -149,7 +153,13 @@ async function handleMore(a: { key: string }) {
       share()
       break
     case 'report':
-      showToast('举报功能即将上线')
+      if (!auth.isLoggedIn) {
+        goLoginWithReturn(route.fullPath)
+        break
+      }
+      moreShow.value = false
+      reportTarget.value = { type: 'post', id: p.id }
+      reportShow.value = true
       break
     case 'delete':
     case 'modDelete':
@@ -194,6 +204,15 @@ function onReply(cid: number, name: string) {
   replyTo.value = { id: cid, name }
   inputText.value = `回复 @${name}：`
   nextTick(() => inputEl.value?.focus())
+}
+// 评论举报入口（#33）
+function onReportComment(cid: number) {
+  if (!auth.isLoggedIn) {
+    goLoginWithReturn(route.fullPath)
+    return
+  }
+  reportTarget.value = { type: 'comment', id: cid }
+  reportShow.value = true
 }
 async function onDeleteComment(cid: number) {
   try {
@@ -294,7 +313,7 @@ function onImage(url: string) {
       :comments="tree"
       :post-id="post.id"
       @reply="onReply"
-      @report="() => showToast('举报功能即将上线')"
+      @report="onReportComment"
       @delete="onDeleteComment"
     />
     <Empty v-else title="还没有评论" desc="来抢沙发" />
@@ -304,6 +323,11 @@ function onImage(url: string) {
       :actions="moreActions"
       cancel-text="取消"
       @select="handleMore"
+    />
+    <ReportSheet
+      v-model:show="reportShow"
+      :target-type="reportTarget?.type ?? 'post'"
+      :target-id="reportTarget?.id ?? 0"
     />
 
     <!-- 底部评论栏 -->
