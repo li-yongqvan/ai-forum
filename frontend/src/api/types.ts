@@ -101,3 +101,18 @@ export interface FollowTarget {
   target_type: FollowTargetType
   target_id: number
 }
+
+// 通知中心（#32）：schema 5 类，当前仅 follow 由关注触发生成
+export type NotificationType = 'follow' | 'like' | 'comment' | 'reply' | 'report_result'
+
+export interface AppNotification {
+  id: number
+  type: NotificationType
+  actor_id?: number
+  actor_name?: string
+  target_type?: string
+  target_id?: number
+  target_title?: string
+  is_read: boolean
+  created_at: string
+}

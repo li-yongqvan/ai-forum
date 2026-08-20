@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,18 +9,21 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/li-yongqvan/ai-forum/backend/content"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/middleware"
+	"github.com/li-yongqvan/ai-forum/backend/notify"
 	"github.com/li-yongqvan/ai-forum/backend/user"
 )
 
 // FollowHandler 统一关注端点（#9 §5.2：关注用户/板块/话题，#4 目标类型拆分 → handler 按类型分派）。
+// notify：关注用户成功后生成 follow 通知（#32 跨包聚合在 handler 层，SOP §5.8）。
 type FollowHandler struct {
 	users   user.Service
 	content content.Service
+	notify  notify.Service
 }
 
 // NewFollowHandler 装配 FollowHandler。
-func NewFollowHandler(users user.Service, content content.Service) *FollowHandler {
-	return &FollowHandler{users: users, content: content}
+func NewFollowHandler(users user.Service, content content.Service, notify notify.Service) *FollowHandler {
+	return &FollowHandler{users: users, content: content, notify: notify}
 }
 
 type followReq struct {
@@ -56,8 +60,34 @@ func (h *FollowHandler) Follow(c *gin.Context) {
 		respondFollowError(c, err)
 		return
 	}
+	// 关注用户成功后生成 follow 通知（#32：快照自足，不通知自己——服务端已拒自关；
+	// 通知失败不回滚关注成功，吞错仅影响通知落库）。
+	if req.TargetType == "user" {
+		h.notifyFollow(ctx, claims.UserID, claims.Username, req.TargetID)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
+
+// notifyFollow 生成「X 关注了你」通知：接收人 = 被关注者，actor = 当前关注者（快照就地算，#4 D4）。
+// 跳转锚点按 IA v2 §4：follow → 用户主页（target 指向关注者本人主页）。
+func (h *FollowHandler) notifyFollow(ctx context.Context, followerID int64, followerName string, targetID int64) {
+	var avatar *string
+	if u, err := h.users.GetUser(ctx, followerID); err == nil {
+		avatar = u.AvatarURL
+	}
+	_ = h.notify.CreateNotification(ctx, notify.CreateNotificationCmd{
+		RecipientID: targetID,
+		Type:        "follow",
+		ActorID:     &followerID,
+		ActorName:   &followerName,
+		ActorAvatar: avatar,
+		TargetType:  strPtr("user"),
+		TargetID:    &followerID,
+	})
+}
+
+// strPtr 返回字符串指针（构造快照字段用）。
+func strPtr(s string) *string { return &s }
 
 // Unfollow DELETE /api/v1/follows?target_type=&target_id=
 func (h *FollowHandler) Unfollow(c *gin.Context) {
