@@ -21,7 +21,9 @@
 
 ## 活跃 ticket
 
-> **上线前准备（launch-prep-8888）**：接手文档 `docs/handoffs/launch-prep-8888.md`（两个线上 bug 已修复 + 人工测试准备 + 待决：部署可靠性 #26、测试数据是否清空、首发时点）。新会话读该文档推进首发。
+> **#23 收藏/关注列表**：`docs/handoffs/23-favorites-list.md`（接通「我的」页收藏/关注 tab；范围 = 收藏 + 关注，旧底稿「仅收藏/拆 #27」已过时——#27 实为 SOP 落地 PR，不存在关注列表独立 ticket，以 ticket 正文与地图为准）。
+> **#33 举报与处理闭环**：`docs/handoffs/33-report-closure.md`（举报 API + 管理队列 + `report_result` 通知 + 前端入口；依赖通知中心**已满足**；先做第 0 步 grilling 5 决策）。
+> **前端单测进 CI（无 ticket，地图 Roadmap 第 2 项）**：`docs/handoffs/frontend-unit-tests-ci.md`（deploy.yml test job 挂 `npm run test:unit`，`continue-on-error` 过渡转阻塞）。
 
 ## 已解决
 

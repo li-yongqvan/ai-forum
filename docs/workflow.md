@@ -147,6 +147,7 @@
 3. **合并前自审**：`/code-review`（审查：符合规范？符合 ticket 意图？）—— 桌面/终端执行 skill。
 4. **等待用户明确授权**，然后 `gh pr merge <N> --merge`（保持合并历史）。
 5. **PR 阶段无 CI 是已知遗留**：`deploy.yml` 仅 `on: push: [main]`。规划项：加 `pull_request` 触发（test/lint 在 PR 跑、deploy job 级 `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`、test/lint 加 `paths-ignore: ['docs/**','**.md']`），见 §9.3。落地前，合并进 main 的那次 CI 是首个反馈点。
+6. **引用规范（编号空间）**：GitHub 中 issue 与 PR **共用同一编号空间**（PR 内部即一种特殊 issue，`gh issue view N` 能查到 PR），裸写「#N」有歧义——曾出现「#27」实为 SOP 落地 PR、却被误当关注列表 ticket（2026-08-20）。**一律显式标注类型**：ticket 写「issue #N」、合并请求写「PR #N」，**不裸写编号**；外部链接用完整 URL（`/issues/N` 与 `/pull/N` 区分）。
 
 ---
 
