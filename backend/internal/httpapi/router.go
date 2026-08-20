@@ -10,6 +10,7 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/handler"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/middleware"
+	"github.com/li-yongqvan/ai-forum/backend/moderation"
 	"github.com/li-yongqvan/ai-forum/backend/notify"
 	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
@@ -43,7 +44,7 @@ func NewUserProvider(svc user.Service) content.UserProvider {
 }
 
 // NewEngine 组装 Gin 引擎与全部路由。
-func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service, uploadSvc upload.Service, notifySvc notify.Service) *gin.Engine {
+func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service, uploadSvc upload.Service, notifySvc notify.Service, moderationSvc moderation.Service) *gin.Engine {
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -56,6 +57,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 	ph := handler.NewProfileHandler(userSvc, contentSvc)
 	upl := handler.NewUploadHandler(uploadSvc)
 	nh := handler.NewNotifyHandler(notifySvc)
+	mh := handler.NewModerationHandler(moderationSvc)
 
 	r.GET("/healthz", handler.Health)
 
@@ -107,6 +109,9 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		authed.POST("/notifications/:id/read", nh.MarkRead)
 		authed.POST("/notifications/read-all", nh.MarkAllRead)
 
+		// 举报创建（#33：需登录）
+		authed.POST("/reports", mh.CreateReport)
+
 		// 图片上传（#12：需登录；无 DB，图片 GET 由 nginx/开发态 Go 托管）
 		authed.POST("/uploads", upl.Upload)
 
@@ -115,6 +120,10 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		mod.Use(middleware.RequireRole("moderator", "admin"))
 		mod.POST("/posts/:id/pin", ch.PinPost)
 		mod.POST("/posts/:id/feature", ch.FeaturePost)
+		// 举报处理队列（#33）
+		mod.GET("/moderation/reports", mh.ListReports)
+		mod.GET("/moderation/reports/count", mh.CountReports)
+		mod.POST("/moderation/reports/:id/handle", mh.HandleReport)
 	}
 	return r
 }

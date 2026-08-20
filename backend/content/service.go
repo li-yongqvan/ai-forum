@@ -71,6 +71,14 @@ type CommentView struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// PostMetaView 帖子最小元数据（治理域 enrich/处理用，#33 S4：复用 repo.GetPostByID，
+// 不触发 view_count 自增——GetPost 有浏览副作用，不能用于治理侧查询）。
+type PostMetaView struct {
+	ID       int64
+	AuthorID int64
+	Title    string
+}
+
 type LikeCmd struct {
 	UserID     int64
 	TargetType string // post | comment
@@ -215,6 +223,10 @@ type Service interface {
 	Unfavorite(ctx context.Context, in FavoriteCmd) error
 
 	GetPost(ctx context.Context, in GetPostQuery) (PostView, error)
+	// GetPostMeta 返回帖子最小元数据（作者 + 标题），不触发浏览量自增（治理域 enrich/处理用，#33 S4）。
+	GetPostMeta(ctx context.Context, id int64) (PostMetaView, error)
+	// GetComment 按 id 返回单条评论读模型（治理域 enrich/处理用，#33 S4）。
+	GetComment(ctx context.Context, id int64) (CommentView, error)
 	ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error)
 	GetCommentTree(ctx context.Context, postID int64) (CommentTreeView, error)
 	ListBoards(ctx context.Context, viewerID int64) ([]BoardView, error)
@@ -461,6 +473,24 @@ func (s *service) GetPost(ctx context.Context, in GetPostQuery) (PostView, error
 	}
 	p.ViewCount++
 	return s.postView(ctx, p, in.ViewerID)
+}
+
+// GetPostMeta 返回帖子最小元数据，不做浏览量自增（#33 S4：治理域 enrich 不能污染统计数据）。
+func (s *service) GetPostMeta(ctx context.Context, id int64) (PostMetaView, error) {
+	p, err := s.repo.GetPostByID(ctx, id)
+	if err != nil {
+		return PostMetaView{}, ErrPostNotFound
+	}
+	return PostMetaView{ID: p.ID, AuthorID: p.AuthorID, Title: p.Title}, nil
+}
+
+// GetComment 按 id 返回单条评论读模型（#33 S4：治理域 enrich 需按 comment id 读，现有 GetCommentTree 只按 post id 聚合）。
+func (s *service) GetComment(ctx context.Context, id int64) (CommentView, error) {
+	c, err := s.repo.GetCommentByID(ctx, id)
+	if err != nil {
+		return CommentView{}, ErrCommentNotFound
+	}
+	return s.commentView(ctx, c, nil), nil
 }
 
 func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error) {
