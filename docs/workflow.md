@@ -46,7 +46,7 @@
 - **优先级原则**：价值 × 学习目标（项目是学习导向，见地图 Destination）。
 - **当前顺序**（首发后首批）：
   1. **#26 部署可靠性：镜像交付改 CI 内 scp 镜像包（A' 方案，已落地）**（见 §9.2；不依赖任何 registry 账号）
-  2. **前端单测进 CI**（`continue-on-error` 过渡 → 转阻塞，见 §7）
+  2. **前端单测进 CI**（已挂入：`frontend-test` job 非阻塞过渡 → 转阻塞，见 §7）
   3. **#23 收藏/关注列表**（见 §12 walkthrough）
   4. 下一批按「价值 × 学习目标」排，朝组合 B 微服务演进。
 - **根因 2.3（本地全量测试慢）的显式表态**：开发中只测改动包（`go test ./<pkg>/...`），push 前全量；**不引入 pre-push 钩子**（避免本地环境差异阻塞提交，CI 是最终 gate）。
@@ -128,7 +128,7 @@
 | 后端 service | 单测，fake repo（`<包>/fake_repo_test.go`） | **阻塞**（test job） | 成功+主要失败路径；核心模块 ≥70% |
 | 后端 handler | 集成，testcontainers 真实 PG（`internal/testutil/db.go`，无 Docker 自动 skip） | **阻塞** | 关键 REST 端点 |
 | 后端 lint | golangci | **非阻塞**（`continue-on-error`） | 已知遗留 `upload.go:46` errcheck |
-| 前端单测 | vitest（`<Name>.test.ts`） | **当前不进 CI**；规划 `continue-on-error` 过渡 → **连续 5 run 全绿后下一票转阻塞** | 工具/composable/store；组件参照 PostDetail |
+| 前端单测 | vitest（`<Name>.test.ts`） | **已进 CI**（`frontend-test` job，`continue-on-error` 过渡，非阻塞）；**该 job 连续 5 次全绿后下一票转阻塞**（转正：移除 continue-on-error + deploy needs 加入，见 §9.1） | 工具/composable/store；组件参照 PostDetail |
 | E2E | Playwright | **不进 MVP CI**，本地跑 | 主流程冒烟 |
 | workflow 自身 | actionlint（`workflow-lint.yml`，任何分支 push） | **阻塞** | 防止 CI 瘫痪 |
 
