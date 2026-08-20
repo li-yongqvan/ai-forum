@@ -96,7 +96,7 @@ async function onItemClick(n: AppNotification) {
   // 未读 → 先本地置已读（乐观），后台确认
   if (!n.is_read) {
     n.is_read = true
-    notify.unread = Math.max(0, notify.unread - 1)
+    notify.decrementUnread()
     try {
       await api.markNotificationRead(n.id)
     } catch {

@@ -17,5 +17,8 @@ export const useNotifyStore = defineStore('notify', {
     clearUnread() {
       this.unread = 0
     },
+    decrementUnread() {
+      this.unread = Math.max(0, this.unread - 1)
+    },
   },
 })

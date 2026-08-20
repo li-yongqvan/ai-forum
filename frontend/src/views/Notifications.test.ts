@@ -6,7 +6,7 @@ import type { AppNotification } from '../api/types'
 import Empty from '../components/Empty.vue'
 
 const push = vi.fn()
-const notifyState = { unread: 1, refreshUnread: vi.fn(), clearUnread: vi.fn() }
+const notifyState = { unread: 1, refreshUnread: vi.fn(), clearUnread: vi.fn(), decrementUnread: vi.fn() }
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ fullPath: '/notifications' }),
