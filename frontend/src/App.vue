@@ -3,16 +3,19 @@ import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useThemeStore } from './stores/theme'
 import { useAuthStore } from './stores/auth'
+import { useNotifyStore } from './stores/notify'
 import AppIcon from './components/AppIcon.vue'
 
 const route = useRoute()
 const router = useRouter()
 const theme = useThemeStore()
 const auth = useAuthStore()
+const notify = useNotifyStore()
 
 onMounted(() => {
   theme.init()
   auth.fetchMe()
+  notify.refreshUnread()
 })
 
 const L1 = ['/feed', '/boards', '/notifications', '/me']
@@ -53,7 +56,7 @@ const showFab = computed(() => {
         <span>板块</span>
         <template #icon><AppIcon name="grid" :size="22" /></template>
       </van-tabbar-item>
-      <van-tabbar-item replace to="/notifications">
+      <van-tabbar-item replace to="/notifications" :badge="notify.unread || ''">
         <span>通知</span>
         <template #icon><AppIcon name="bell" :size="22" /></template>
       </van-tabbar-item>

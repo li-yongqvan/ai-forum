@@ -10,6 +10,7 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/handler"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/middleware"
+	"github.com/li-yongqvan/ai-forum/backend/notify"
 	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
 )
@@ -42,7 +43,7 @@ func NewUserProvider(svc user.Service) content.UserProvider {
 }
 
 // NewEngine 组装 Gin 引擎与全部路由。
-func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service, uploadSvc upload.Service) *gin.Engine {
+func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service, uploadSvc upload.Service, notifySvc notify.Service) *gin.Engine {
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -51,9 +52,10 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 
 	uh := handler.NewUserHandler(userSvc)
 	ch := handler.NewContentHandler(contentSvc)
-	fh := handler.NewFollowHandler(userSvc, contentSvc)
+	fh := handler.NewFollowHandler(userSvc, contentSvc, notifySvc)
 	ph := handler.NewProfileHandler(userSvc, contentSvc)
 	upl := handler.NewUploadHandler(uploadSvc)
+	nh := handler.NewNotifyHandler(notifySvc)
 
 	r.GET("/healthz", handler.Health)
 
@@ -96,6 +98,12 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		authed.DELETE("/favorites", ch.Unfavorite)
 		authed.POST("/follows", fh.Follow)
 		authed.DELETE("/follows", fh.Unfollow)
+
+		// 通知中心（#32：需登录，#9 登录墙）
+		authed.GET("/notifications", nh.ListNotifications)
+		authed.GET("/notifications/unread_count", nh.UnreadCount)
+		authed.POST("/notifications/:id/read", nh.MarkRead)
+		authed.POST("/notifications/read-all", nh.MarkAllRead)
 
 		// 图片上传（#12：需登录；无 DB，图片 GET 由 nginx/开发态 Go 托管）
 		authed.POST("/uploads", upl.Upload)

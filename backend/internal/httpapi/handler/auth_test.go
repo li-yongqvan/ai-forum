@@ -14,6 +14,7 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/config"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
 	"github.com/li-yongqvan/ai-forum/backend/internal/testutil"
+	"github.com/li-yongqvan/ai-forum/backend/notify"
 	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
 	"gorm.io/gorm"
@@ -33,9 +34,10 @@ func newEngineWithUploads(t *testing.T, gdb *gorm.DB, uploadDir string, maxBytes
 	userSvc := user.NewService(user.NewGormRepo(gdb), jwtMgr)
 	contentSvc := content.NewService(content.NewGormRepo(gdb), httpapi.NewUserProvider(userSvc))
 	uploadSvc := upload.NewService(upload.Config{Dir: uploadDir, MaxBytes: maxBytes})
+	notifySvc := notify.NewService(notify.NewGormRepo(gdb))
 	return httpapi.NewEngine(
 		config.Config{Env: "test", Port: "8080", UploadsDir: uploadDir, MaxUploadBytes: maxBytes},
-		jwtMgr, userSvc, contentSvc, uploadSvc,
+		jwtMgr, userSvc, contentSvc, uploadSvc, notifySvc,
 	)
 }
 
