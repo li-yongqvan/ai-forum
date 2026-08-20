@@ -4,6 +4,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import * as api from '../api/content'
+import * as reportApi from '../api/report'
 import type { Board, FollowedUser, Topic, UserProfile } from '../api/types'
 import { formatTime } from '../utils/format'
 import Avatar from '../components/Avatar.vue'
@@ -16,6 +17,7 @@ import AppIcon from '../components/AppIcon.vue'
 const router = useRouter()
 const auth = useAuthStore()
 const profile = ref<UserProfile | null>(null)
+const pendingReports = ref(0)
 const tab = ref<'posts' | 'favs' | 'follows'>('posts')
 const followTab = ref<'users' | 'boards' | 'topics'>('users')
 
@@ -25,6 +27,14 @@ onMounted(async () => {
     profile.value = await api.getUserProfile(auth.user!.id)
   } catch {
     /* 忽略 */
+  }
+  // 治理入口徽章（#33：mod 待处理举报数）
+  if (auth.isMod) {
+    try {
+      pendingReports.value = (await reportApi.countReports()).count
+    } catch {
+      /* 忽略 */
+    }
   }
 })
 
@@ -64,6 +74,10 @@ const unfollowTopic = (row: Topic) => api.unfollow({ target_type: 'topic', targe
           <div class="stat"><b>{{ profile.following_count }}</b><span>关注</span></div>
         </div>
         <div class="entries">
+          <button v-if="auth.isMod" class="entry" @click="router.push('/reports')">
+            <AppIcon name="shield" :size="18" />举报处理
+            <span v-if="pendingReports > 0" class="cnt">{{ pendingReports }}</span>
+          </button>
           <button class="entry" @click="router.push('/settings')">
             <AppIcon name="gear" :size="18" />设置
           </button>
@@ -198,6 +212,19 @@ const unfollowTopic = (row: Topic) => api.unfollow({ target_type: 'topic', targe
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
+}
+.cnt {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* 关注行（仿 Boards.vue topic-row/follow-chip） */
