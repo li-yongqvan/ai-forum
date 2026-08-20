@@ -22,6 +22,7 @@
 **根因**：**Git Bash MSYS 路径转换**把 gh 参数里以 `/` 开头的路径改写成了 Windows 路径（`/repos/...` → `C:/Program Files/Git/repos/...`），gh 收到坏路径自然 404。同机 curl 带完整 URL 却能 200 —— 这是区分关键。
 **对策**：所有 gh 命令加 `MSYS_NO_PATHCONV=1`；`gh api` 的 POST/PATCH 仍偶发 404 → 直接 `curl` 完整 `https://api.github.com/...` URL 更可靠。
 **教训**：**先怀疑本地工具/路径/编码，再归因网络**；用「同 token 不同调用方式对照」定位。
+**补充（2026-08-20 修正）**：`gh auth refresh`（用户手动重登）后，`gh issue view/edit` 读路径**恢复正常**——此前残留的「读 404/写 200」实为**鉴权过期叠加**，非纯 API 限制。结论：读到 404 时先查 `gh auth status` + `gh auth refresh`，再走 curl 兜底，勿把「读永远不通」当长期假设。
 
 ### #18 —— `ssh -T` 的退出码怪癖
 
