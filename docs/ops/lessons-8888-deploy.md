@@ -1,0 +1,79 @@
+# 8888 部署 · 经验与坑位清单（2026-08-19/20）
+
+> 目的：沉淀本次上线过程中每次卡点的**根因 + 对策 + 可复用验证路径**，供后续部署/运维/CI 修改直接取用。
+> 关联：`docs/ops/deployment-v3-8888-container.md`（决策基线）、`docs/ops/acceptance-8888-results.md`（验收）。
+
+## 0. PR 序列一览（本次部署）
+
+| PR | 内容 | 合并时间 | 主要卡点 |
+|---|---|---|---|
+| #17 | 8888 容器化部署代码落地 | 08-19 02:35 | GitHub API 假 404（MSYS）；合并需授权 |
+| #18 | bootstrap pipefail 修复 + lint v7 | 08-19 06:49 | `ssh -T` 退出码怪癖 |
+| #19 | 上传 URL 含 :8888 + CI nginx reload | 08-19 08:14 | 验收发现 URL bug；我 scp 污染服务器 repo；评审补 reload 缺口 |
+| #20 | golangci-lint 配置迁移 v2 | 08-19 08:56 | 配置 v1/v2 字段混写 |
+| #21 | 无评论详情崩溃修复 | 08-19 14:24 | （新会话按 handoff 完成） |
+| #22 | 测试数据清理状态更新 | 08-19 15:25 | （新会话） |
+
+## 1. 逐 PR 卡点与根因
+
+### #17 —— 最大的坑：GitHub API 全线 404（不是网络！）
+
+**现象**：`gh api /repos/...`、`gh variable set`、`gh repo view` 等大量 404，一度被误判为「网络波动」。
+**根因**：**Git Bash MSYS 路径转换**把 gh 参数里以 `/` 开头的路径改写成了 Windows 路径（`/repos/...` → `C:/Program Files/Git/repos/...`），gh 收到坏路径自然 404。同机 curl 带完整 URL 却能 200 —— 这是区分关键。
+**对策**：所有 gh 命令加 `MSYS_NO_PATHCONV=1`；`gh api` 的 POST/PATCH 仍偶发 404 → 直接 `curl` 完整 `https://api.github.com/...` URL 更可靠。
+**教训**：**先怀疑本地工具/路径/编码，再归因网络**；用「同 token 不同调用方式对照」定位。
+
+### #18 —— `ssh -T` 的退出码怪癖
+
+**现象**：bootstrap 首步「GitHub SSH 自检」误报 FATAL。
+**根因**：`ssh -T git@github.com` **认证成功也返回 exit 1**（GitHub 不提供 shell，读完问候即断连）；脚本开了 `set -o pipefail`，`ssh | grep` 管道被 ssh 的 exit 1 拖垮。
+**对策**：`auth_out=$(ssh -T git@github.com 2>&1 || true)` 先捕获输出再 grep，绕开 pipefail。
+**教训**：管道 + `pipefail` 下，命令自身的非零退出会让「语义成功」误判失败。
+
+### #19 —— 上传 URL 缺端口 + 我自己的失误
+
+**卡点 A（验收发现的真 bug）**：nginx `proxy_set_header Host $host` 中 `$host` **剥端口** → api 用 `c.Request.Host` 拼 URL 丢 `:8888` → 图片指向 80 端口 404。**非标准端口部署的典型坑**。对策：`$host` → `$http_host`（保留含端口原始 Host）。
+
+**卡点 B（我的操作失误）**：pre-校验 nginx 配置时**直接把新 web.conf scp 进了服务器 git 仓库** → 产生未提交改动 → 后续 CI 的 `git pull` 被拒，部署假失败。对策：**永远不要用 scp/手工改服务器 repo 内的文件**；验证配置用临时文件或容器只读挂载。
+**教训**：服务器上 repo 的改动必须走 git（`git checkout --` 回滚）。
+
+**卡点 C（评审补的执行缺口）**：web.conf 是 bind mount，CI `docker compose up -d` 判定容器 spec 无变化 → 不重建 → **nginx 仍跑旧配置**（「部署成功但修复未生效」假阴性）。对策：部署脚本 `up -d` 后加 `nginx -t && nginx -s reload`（`-t` 先 fail fast）。
+**教训**：bind mount 的配置文件变更必须显式 reload；`nginx -T` 输出的是磁盘配置不是运行配置。
+
+### #20 —— golangci-lint v1/v2 配置混写
+
+**现象**：`golangci-lint-action@v7`（golangci-lint 2.12.2）`config verify` 报 `issues.exclude-rules` 非法。
+**根因**：`backend/.golangci.yml` 头写 `version: "2"` 却用 v1 字段。v2 迁移：`issues.exclude-rules` → `linters.exclusions.rules`。
+**对策**：迁移配置；**本地用与 CI 同版本 Docker 镜像预验证**（`docker run golangci/golangci-lint:v2.12.2 golangci-lint config verify`），避免红 CI 才知道。
+**教训**：配置声明版本与实际字段必须一致；升级工具链前先本地验证。
+
+## 2. 横切经验（每轮都踩/都要用）
+
+1. **GitHub API 从本机间歇 404**（可能被墙）→ 多路验证：服务器侧真值（git HEAD / DB / 磁盘文件）优先；GHCR 匿名 `ghcr.io/token` 流可作替代验证（查镜像 tag 证明 CI 构建步执行）。
+2. **Windows CRLF/LF**：要 scp 到服务器由 bash/nginx 执行的文件必须 LF（`.gitattributes` 已强制 `*.sh`/`web.conf`）。检测用 `tr -cd '\r' | wc -c`（`grep -c $"\r"` 不可靠）。
+3. **合并/删生产数据等动作必须用户显式授权**（auto mode 分类器会拦）。
+4. **地图 issue #1 按里程碑更新**，别攒到收尾。
+5. **CI run 状态优先看服务器落地效果**（git pull 到的 commit、容器重启时间、上传 URL）而不是 GitHub API。
+6. 遇到疑似网络问题：**最多重试 4 次、换验证方式、先排除本地因素（MSYS/路径/编码/配置）再归因网络**。
+
+## 3. 可复用验证命令速查
+
+```bash
+# GitHub API（本机）——gh 一律加 MSYS_NO_PATHCONV=1；写操作用 curl 完整 URL
+export MSYS_NO_PATHCONV=1
+gh api /repos/li-yongqvan/ai-forum/...        # 读
+curl -s -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/.../...  # 写/查
+
+# 服务器侧真值
+ssh liyongquan@122.51.233.225 'cd ~/ai-forum && git rev-parse --short HEAD'   # CI 部署是否拉到
+ssh liyongquan@122.51.233.225 'cd ~/ai-forum && docker compose ps'            # 容器健康
+ssh liyongquan@122.51.233.225 'cd ~/ai-forum && docker compose exec -T web nginx -t'  # 配置校验
+
+# GHCR 匿名验证（无需 GitHub API）
+TOK=$(curl -s "https://ghcr.io/token?scope=repository:li-yongqvan/ai-forum-api:pull&service=ghcr.io" | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+curl -s -H "Authorization: Bearer $TOK" https://ghcr.io/v2/li-yongqvan/ai-forum-api/tags/list
+
+# 本地验证 golangci 配置（同 CI 版本）
+export MSYS_NO_PATHCONV=1
+docker run --rm -v "C:/Users/liyongquan/ai-forum/backend:/repo" -w /repo golangci/golangci-lint:v2.12.2 golangci-lint config verify
+```
