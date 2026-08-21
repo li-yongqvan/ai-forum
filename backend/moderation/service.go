@@ -41,19 +41,19 @@ type CreateReportCmd struct {
 }
 
 type ReportView struct {
-	ID              int64      `json:"id"`
-	ReporterID      int64      `json:"reporter_id"`
-	ReporterUsername string    `json:"reporter_username,omitempty"` // enrich（UserGateway）
-	TargetType      string     `json:"target_type"`
-	TargetID        int64      `json:"target_id"`
-	TargetTitle     string     `json:"target_title,omitempty"` // enrich（帖子标题/评论摘要/用户名）
-	Reason          string     `json:"reason"`
-	ReporterNote    *string    `json:"reporter_note,omitempty"`
-	Status          string     `json:"status"`
-	HandlerID       *int64     `json:"handler_id,omitempty"`
-	HandledAt       *time.Time `json:"handled_at,omitempty"`
-	HandlingNote    *string    `json:"handling_note,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID               int64      `json:"id"`
+	ReporterID       int64      `json:"reporter_id"`
+	ReporterUsername string     `json:"reporter_username,omitempty"` // enrich（UserGateway）
+	TargetType       string     `json:"target_type"`
+	TargetID         int64      `json:"target_id"`
+	TargetTitle      string     `json:"target_title,omitempty"` // enrich（帖子标题/评论摘要/用户名）
+	Reason           string     `json:"reason"`
+	ReporterNote     *string    `json:"reporter_note,omitempty"`
+	Status           string     `json:"status"`
+	HandlerID        *int64     `json:"handler_id,omitempty"`
+	HandledAt        *time.Time `json:"handled_at,omitempty"`
+	HandlingNote     *string    `json:"handling_note,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 // HandleReportCmd 处理举报（IA v2 §5.6 闭环）。
@@ -72,6 +72,15 @@ type ListReportsQuery struct {
 	Status string // 空 = 全部；默认 pending 由 handler 层补
 	Limit  int
 	Offset int
+}
+
+// RecordActionCmd 独立治理审计命令（#34：ban/unban 直接治理动作，独立于举报流程）。
+// TargetType 恒 "user"；Reason 必填且 ≤500（F5，moderation_actions.reason VARCHAR(500)）。
+type RecordActionCmd struct {
+	ModeratorID int64
+	Action      string // ActionBan | ActionUnban（validRecordAction 白名单）
+	TargetID    int64
+	Reason      string
 }
 
 // ---- 跨包网关 seam（S1：moderation 不 import content/user/notify） ----
@@ -154,6 +163,9 @@ func validAction(a string) bool {
 	}
 }
 
+// validRecordAction 独立审计白名单：仅 ban_user/unban_user（#34；不触碰 validAction，HandleReport 仍拒封禁）。
+func validRecordAction(a string) bool { return a == ActionBan || a == ActionUnban }
+
 func statusFor(action string) string {
 	if action == ActionDismiss {
 		return StatusDismissed
@@ -189,6 +201,8 @@ type Service interface {
 	HandleReport(ctx context.Context, in HandleReportCmd) error
 	ListReports(ctx context.Context, in ListReportsQuery) ([]ReportView, error)
 	CountReports(ctx context.Context, status string) (int64, error)
+	// RecordAction 追加独立治理审计（#34：ban/unban 直接动作，reason 必填 ≤500，TargetType 恒 user）。
+	RecordAction(ctx context.Context, in RecordActionCmd) error
 }
 
 // ---- 实现 ----
@@ -405,4 +419,23 @@ func (s *service) targetTitle(ctx context.Context, r *Report) string {
 // CountReports 队列计数（Me.vue 待处理徽章，S8）。
 func (s *service) CountReports(ctx context.Context, status string) (int64, error) {
 	return s.repo.CountReports(ctx, status)
+}
+
+// RecordAction 追加独立治理审计（#34：ban/unban 直接动作，独立于举报流程）。
+// 校验：动作白名单 + TargetType 恒 user + reason 必填 ≤500（与 handler 预校验同源，评审 Q1 条件 3）。
+func (s *service) RecordAction(ctx context.Context, in RecordActionCmd) error {
+	if !validRecordAction(in.Action) || in.TargetID <= 0 {
+		return ErrInvalidAction
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" || len([]rune(reason)) > 500 {
+		return ErrInvalidAction
+	}
+	return s.repo.AppendAction(ctx, &ModerationAction{
+		ModeratorID: in.ModeratorID,
+		Action:      in.Action,
+		TargetType:  "user",
+		TargetID:    in.TargetID,
+		Reason:      reason,
+	})
 }

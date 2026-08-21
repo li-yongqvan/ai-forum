@@ -48,8 +48,34 @@ func (r *gormRepo) GetUserByID(ctx context.Context, id int64) (*User, error) {
 	return &u, nil
 }
 
-func (r *gormRepo) UpdateUserStatus(ctx context.Context, id int64, status string) error {
-	return r.db.WithContext(ctx).Model(&User{}).Where("id = ?", id).Update("status", status).Error
+// SetBanned 条件更新 active→banned（#34：并发双 admin 同时 ban 时 RowsAffected=0 原子地保证仅一方成功）。
+func (r *gormRepo) SetBanned(ctx context.Context, id int64) error {
+	res := r.db.WithContext(ctx).
+		Model(&User{}).
+		Where("id = ? AND status = ?", id, "active").
+		Update("status", "banned")
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrAlreadyBanned
+	}
+	return nil
+}
+
+// SetActive 条件更新 banned→active（#34）。
+func (r *gormRepo) SetActive(ctx context.Context, id int64) error {
+	res := r.db.WithContext(ctx).
+		Model(&User{}).
+		Where("id = ? AND status = ?", id, "banned").
+		Update("status", "active")
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotBanned
+	}
+	return nil
 }
 
 func (r *gormRepo) GetInvitationCode(ctx context.Context, code string) (*InvitationCode, error) {

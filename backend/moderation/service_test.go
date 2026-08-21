@@ -288,3 +288,68 @@ func TestListReportsEnrich(t *testing.T) {
 		t.Errorf("pending count = %d, want 1", n)
 	}
 }
+
+func TestRecordAction(t *testing.T) {
+	newSvcFor := func(t *testing.T) *service {
+		t.Helper()
+		repo := newFakeRepo()
+		return NewService(repo, newFakeContent(), newFakeUsers(), newFakeNotifier()).(*service)
+	}
+
+	t.Run("ban_user 成功", func(t *testing.T) {
+		svc := newSvcFor(t)
+		if err := svc.RecordAction(ctx(), RecordActionCmd{ModeratorID: 9, Action: ActionBan, TargetID: 42, Reason: "人身攻击"}); err != nil {
+			t.Fatalf("RecordAction() error = %v", err)
+		}
+		actions := svc.repo.(*fakeRepo).actions
+		if len(actions) != 1 {
+			t.Fatalf("审计行数 = %d, want 1", len(actions))
+		}
+		a := actions[0]
+		if a.Action != ActionBan || a.TargetType != "user" || a.TargetID != 42 || a.ModeratorID != 9 || a.Reason != "人身攻击" {
+			t.Errorf("审计行 = %+v, want ban_user/user/42/moderator 9/reason 人身攻击", a)
+		}
+	})
+
+	t.Run("unban_user 成功", func(t *testing.T) {
+		svc := newSvcFor(t)
+		if err := svc.RecordAction(ctx(), RecordActionCmd{ModeratorID: 9, Action: ActionUnban, TargetID: 42, Reason: "误封纠正"}); err != nil {
+			t.Fatalf("RecordAction() error = %v", err)
+		}
+		if a := svc.repo.(*fakeRepo).actions[0]; a.Action != ActionUnban {
+			t.Errorf("action = %q, want unban_user", a.Action)
+		}
+	})
+
+	t.Run("reason 空 → ErrInvalidAction", func(t *testing.T) {
+		svc := newSvcFor(t)
+		err := svc.RecordAction(ctx(), RecordActionCmd{ModeratorID: 9, Action: ActionBan, TargetID: 42, Reason: "  "})
+		if !errors.Is(err, ErrInvalidAction) {
+			t.Errorf("error = %v, want ErrInvalidAction", err)
+		}
+	})
+
+	t.Run("reason 超长 → ErrInvalidAction", func(t *testing.T) {
+		svc := newSvcFor(t)
+		err := svc.RecordAction(ctx(), RecordActionCmd{ModeratorID: 9, Action: ActionBan, TargetID: 42, Reason: strings.Repeat("长", 501)})
+		if !errors.Is(err, ErrInvalidAction) {
+			t.Errorf("error = %v, want ErrInvalidAction", err)
+		}
+	})
+
+	t.Run("非白名单动作 → ErrInvalidAction", func(t *testing.T) {
+		svc := newSvcFor(t)
+		for _, bad := range []string{ActionDismiss, ActionWarn, ActionDeletePost, "nuke"} {
+			if err := svc.RecordAction(ctx(), RecordActionCmd{ModeratorID: 9, Action: bad, TargetID: 42, Reason: "x"}); !errors.Is(err, ErrInvalidAction) {
+				t.Errorf("action=%q error = %v, want ErrInvalidAction", bad, err)
+			}
+		}
+	})
+
+	t.Run("TargetID 非法 → ErrInvalidAction", func(t *testing.T) {
+		svc := newSvcFor(t)
+		if err := svc.RecordAction(ctx(), RecordActionCmd{ModeratorID: 9, Action: ActionBan, TargetID: 0, Reason: "x"}); !errors.Is(err, ErrInvalidAction) {
+			t.Errorf("error = %v, want ErrInvalidAction", err)
+		}
+	})
+}

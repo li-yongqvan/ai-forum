@@ -92,12 +92,29 @@ func (f *fakeRepo) GetUserByID(ctx context.Context, id int64) (*User, error) {
 	return nil, ErrNotFound
 }
 
-func (f *fakeRepo) UpdateUserStatus(ctx context.Context, id int64, status string) error {
+// SetBanned 模拟 gorm 条件更新 active→banned（RowsAffected=0 → ErrAlreadyBanned）。
+func (f *fakeRepo) SetBanned(ctx context.Context, id int64) error {
 	u, ok := f.byID[id]
 	if !ok {
 		return ErrNotFound
 	}
-	u.Status = status
+	if u.Status != "active" {
+		return ErrAlreadyBanned
+	}
+	u.Status = "banned"
+	return nil
+}
+
+// SetActive 模拟 gorm 条件更新 banned→active（RowsAffected=0 → ErrNotBanned）。
+func (f *fakeRepo) SetActive(ctx context.Context, id int64) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if u.Status != "banned" {
+		return ErrNotBanned
+	}
+	u.Status = "active"
 	return nil
 }
 

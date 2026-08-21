@@ -339,7 +339,7 @@ func TestBan(t *testing.T) {
 		f := newFakeRepo()
 		target := f.seedUser("bob", "b@x.edu", "secret123")
 		svc := newService(f)
-		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 1, TargetID: target.ID}); err != nil {
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: target.ID}); err != nil {
 			t.Fatalf("Ban() error = %v", err)
 		}
 		u, err := f.GetUserByID(context.Background(), target.ID)
@@ -351,8 +351,105 @@ func TestBan(t *testing.T) {
 	t.Run("目标不存在", func(t *testing.T) {
 		f := newFakeRepo()
 		svc := newService(f)
-		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 1, TargetID: 999}); !errors.Is(err, ErrNotFound) {
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: 999}); !errors.Is(err, ErrNotFound) {
 			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("不能封自己", func(t *testing.T) {
+		f := newFakeRepo()
+		admin := f.seedUser("root", "r@x.edu", "secret123")
+		admin.Role = "admin"
+		svc := newService(f)
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: admin.ID, TargetID: admin.ID}); !errors.Is(err, ErrSelfBan) {
+			t.Errorf("error = %v, want ErrSelfBan", err)
+		}
+	})
+
+	t.Run("不能封 admin", func(t *testing.T) {
+		f := newFakeRepo()
+		admin := f.seedUser("root", "r@x.edu", "secret123")
+		admin.Role = "admin"
+		svc := newService(f)
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: admin.ID}); !errors.Is(err, ErrCannotBanAdmin) {
+			t.Errorf("error = %v, want ErrCannotBanAdmin", err)
+		}
+	})
+
+	t.Run("重复封禁 → ErrAlreadyBanned", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: target.ID}); err != nil {
+			t.Fatalf("首次 Ban() error = %v", err)
+		}
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: target.ID}); !errors.Is(err, ErrAlreadyBanned) {
+			t.Errorf("重复 Ban error = %v, want ErrAlreadyBanned", err)
+		}
+	})
+}
+
+func TestUnban(t *testing.T) {
+	t.Run("成功", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		target.Status = "banned"
+		svc := newService(f)
+		if err := svc.Unban(context.Background(), UnbanCmd{OperatorID: 1, TargetID: target.ID}); err != nil {
+			t.Fatalf("Unban() error = %v", err)
+		}
+		u, err := f.GetUserByID(context.Background(), target.ID)
+		if err != nil || u.Status != "active" {
+			t.Errorf("解封后 status = %q, err = %v", u.Status, err)
+		}
+	})
+
+	t.Run("目标不存在", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		if err := svc.Unban(context.Background(), UnbanCmd{OperatorID: 1, TargetID: 999}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("未封禁 → ErrNotBanned", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		if err := svc.Unban(context.Background(), UnbanCmd{OperatorID: 1, TargetID: target.ID}); !errors.Is(err, ErrNotBanned) {
+			t.Errorf("error = %v, want ErrNotBanned", err)
+		}
+	})
+}
+
+func TestIsActive(t *testing.T) {
+	t.Run("active → true", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		active, err := svc.IsActive(context.Background(), target.ID)
+		if err != nil || !active {
+			t.Errorf("IsActive = %v, err = %v, want true", active, err)
+		}
+	})
+
+	t.Run("banned → false", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		target.Status = "banned"
+		svc := newService(f)
+		active, err := svc.IsActive(context.Background(), target.ID)
+		if err != nil || active {
+			t.Errorf("IsActive = %v, err = %v, want false", active, err)
+		}
+	})
+
+	t.Run("软删/不存在 → false", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		active, err := svc.IsActive(context.Background(), 999)
+		if err != nil || active {
+			t.Errorf("IsActive = %v, err = %v, want false", active, err)
 		}
 	})
 }

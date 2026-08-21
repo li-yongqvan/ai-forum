@@ -43,6 +43,20 @@ func NewUserProvider(svc user.Service) content.UserProvider {
 	return userProviderAdapter{svc: svc}
 }
 
+// activeCheckerAdapter 使 user.Service 满足 middleware.ActiveChecker（#34：RequireActive 写拦截 seam）。
+type activeCheckerAdapter struct {
+	svc user.Service
+}
+
+func (a activeCheckerAdapter) IsActive(ctx context.Context, userID int64) (bool, error) {
+	return a.svc.IsActive(ctx, userID)
+}
+
+// NewActiveChecker 构造 middleware.ActiveChecker（供 RequireActive 写拦截）。
+func NewActiveChecker(svc user.Service) middleware.ActiveChecker {
+	return activeCheckerAdapter{svc: svc}
+}
+
 // NewEngine 组装 Gin 引擎与全部路由。
 func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, contentSvc content.Service, uploadSvc upload.Service, notifySvc notify.Service, moderationSvc moderation.Service) *gin.Engine {
 	if cfg.Env == "production" {
@@ -57,7 +71,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 	ph := handler.NewProfileHandler(userSvc, contentSvc)
 	upl := handler.NewUploadHandler(uploadSvc)
 	nh := handler.NewNotifyHandler(notifySvc)
-	mh := handler.NewModerationHandler(moderationSvc)
+	mh := handler.NewModerationHandler(moderationSvc, userSvc)
 
 	r.GET("/healthz", handler.Health)
 
@@ -76,6 +90,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		// auth（auth-flow §9）
 		api.POST("/auth/register", uh.Register)
 		api.POST("/auth/login", uh.Login)
+		// logout/me 豁免 RequireActive（账户生命周期接口：登出放行、读不禁，#34 D3）
 		authed.POST("/auth/logout", uh.Logout)
 		authed.GET("/auth/me", uh.Me)
 
@@ -89,34 +104,32 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		reads.GET("/posts/:id/comments", ch.GetComments)
 		reads.GET("/users/:id", ph.GetUserProfile)
 
-		// 内容写入（操作需登录）
-		authed.POST("/posts", ch.CreatePost)
-		authed.DELETE("/posts/:id", ch.DeletePost)
-		authed.POST("/comments", ch.CreateComment)
-		authed.DELETE("/comments/:id", ch.DeleteComment)
-		authed.POST("/likes", ch.Like)
-		authed.DELETE("/likes", ch.Unlike)
-		authed.POST("/favorites", ch.Favorite)
-		authed.DELETE("/favorites", ch.Unfavorite)
-		authed.GET("/favorites", ch.ListFavorites) // #23 我的收藏（按收藏时间倒序 + 分页）
-		authed.POST("/follows", fh.Follow)
-		authed.DELETE("/follows", fh.Unfollow)
-		authed.GET("/follows", fh.ListFollows) // #23 我关注的用户/板块/话题（target_type 分派）
-
-		// 通知中心（#32：需登录，#9 登录墙）
+		// 登录态只读（#23/#32 我的收藏/关注/通知列表）——写拦截只拦写，读不禁（#34 D3）
+		authed.GET("/favorites", ch.ListFavorites)
+		authed.GET("/follows", fh.ListFollows)
 		authed.GET("/notifications", nh.ListNotifications)
 		authed.GET("/notifications/unread_count", nh.UnreadCount)
-		authed.POST("/notifications/:id/read", nh.MarkRead)
-		authed.POST("/notifications/read-all", nh.MarkAllRead)
 
-		// 举报创建（#33：需登录）
-		authed.POST("/reports", mh.CreateReport)
+		// 全部登录态写操作（#34：RequireActive 拦截被封用户，JWT 7 天内即时生效须查 DB）
+		writers := authed.Group("")
+		writers.Use(middleware.RequireActive(NewActiveChecker(userSvc)))
+		writers.POST("/posts", ch.CreatePost)
+		writers.DELETE("/posts/:id", ch.DeletePost)
+		writers.POST("/comments", ch.CreateComment)
+		writers.DELETE("/comments/:id", ch.DeleteComment)
+		writers.POST("/likes", ch.Like)
+		writers.DELETE("/likes", ch.Unlike)
+		writers.POST("/favorites", ch.Favorite)
+		writers.DELETE("/favorites", ch.Unfavorite)
+		writers.POST("/follows", fh.Follow)
+		writers.DELETE("/follows", fh.Unfollow)
+		writers.POST("/notifications/:id/read", nh.MarkRead)
+		writers.POST("/notifications/read-all", nh.MarkAllRead)
+		writers.POST("/reports", mh.CreateReport)
+		writers.POST("/uploads", upl.Upload)
 
-		// 图片上传（#12：需登录；无 DB，图片 GET 由 nginx/开发态 Go 托管）
-		authed.POST("/uploads", upl.Upload)
-
-		// 管理操作（moderator+，双保险：#9 §5.0）
-		mod := authed.Group("")
+		// 管理操作（moderator+，双保险：#9 §5.0；writers 子组 → 被封 mod 也不许管理）
+		mod := writers.Group("")
 		mod.Use(middleware.RequireRole("moderator", "admin"))
 		mod.POST("/posts/:id/pin", ch.PinPost)
 		mod.POST("/posts/:id/feature", ch.FeaturePost)
@@ -124,6 +137,12 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		mod.GET("/moderation/reports", mh.ListReports)
 		mod.GET("/moderation/reports/count", mh.CountReports)
 		mod.POST("/moderation/reports/:id/handle", mh.HandleReport)
+
+		// 治理管理（admin-only：#9 §5.0 封禁/解封仅 admin）
+		admin := writers.Group("")
+		admin.Use(middleware.RequireRole("admin"))
+		admin.POST("/moderation/users/:id/ban", mh.BanUser)
+		admin.POST("/moderation/users/:id/unban", mh.UnbanUser)
 	}
 	return r
 }

@@ -5,14 +5,14 @@
 
 ## 范围
 
-对外提供 `Service` 接口：`CreateReport` / `HandleReport` / `ListReports` / `CountReports`。治理闭环：举报（帖子/评论/用户）→ 处理（`/reports` 最小闭环）→ append 审计 → `report_result` 通知（只发举报人，#33 D2）。
+对外提供 `Service` 接口：`CreateReport` / `HandleReport` / `ListReports` / `CountReports` / `RecordAction`。治理闭环：举报（帖子/评论/用户）→ 处理（`/reports` 最小闭环）→ append 审计 → `report_result` 通知（只发举报人，#33 D2）。**#34 直接治理动作（ban/unban）经 `RecordAction` 独立追加审计**（不经过举报流程）。
 
 本包**不 import content/user/notify**，跨包能力经 seam 注入：`ContentGateway`（`ResolveTarget`/`DeletePost`/`DeleteComment`）、`UserGateway`（`GetUserView`）、`Notifier`（`CreateNotification`）——组合根（httpapi）装配 adapter（S1）。
 
 ## 不变量（Invariants）
 
 - **审计留痕**：删内容/警告**必须**追加 `moderation_actions`（append-only，仅 created_at 写死不可改）。**`dismiss`（忽略）只改 report 状态、不落审计**（F2 裁决：留痕由 `reports.handler_id/handled_at/handling_note` 承载；IA §5.6 字面「所有动作→append」与此冲突，以 README 为准）。
-- **封禁留 #34**：`ban_user/unban_user` 动作枚举已固化（迁移 0004），但本票 `validAction` 服务端拒绝，不启用。
+- **封禁/解封审计（#34 已启用）**：直接治理动作经 `RecordAction` 追加 `moderation_actions`（`ban_user`/`unban_user`，reason 必填 ≤500，TargetType 恒 `user`）；`HandleReport` 的 `validAction` **仍拒绝** ban/unban（防经举报流程绕过 admin-only 权限门）。封禁状态变更由 user 域 `Ban/Unban` 承载（**状态先改、审计后写**，跨域非原子；审计失败由 handler 显式 500 + `status_changed:true` 报告并对账，见 `docs/handoffs/grilling-decisions/issue-34-governance-permissions-decisions.md`）。
 - **防重复举报**：同一举报者对同一目标（同类型）在 **pending 期**内只允许一条（DB 部分唯一索引 `uq_reports_pending` 兜底 + 服务层 `PendingExists` 预检）；已结案后可再举报。
 - **`reports`/`moderation_actions` 永不删除**（审计）。
 - 状态枚举：`pending/resolved/dismissed`。
@@ -48,6 +48,8 @@
 | GET | `/api/v1/moderation/reports?status=&page=&page_size=` | mod（`RequireRole("moderator","admin")`） | query 缺省 status=pending, page=1, page_size=20（服务端钳 ≤100） | 200 `{"items":[ReportView],"page":N,"page_size":N}` |
 | GET | `/api/v1/moderation/reports/count?status=` | mod | — | 200 `{"count": N}` |
 | POST | `/api/v1/moderation/reports/:id/handle` | mod | `{action, note?}`（note ≤500；action ∈ dismiss/delete_post/delete_comment/warn） | 200 `{"message":"ok"}` |
+| POST | `/api/v1/moderation/users/:id/ban` | admin（`RequireRole("admin")`，#34） | `{reason}`（必填 ≤500；写 `ban_user` 审计） | 200 `{"message":"ok"}` |
+| POST | `/api/v1/moderation/users/:id/unban` | admin（#34） | `{reason}`（必填 ≤500；写 `unban_user` 审计） | 200 `{"message":"ok"}` |
 
 `ReportView` 含 enrich 字段 `reporter_username`/`target_title`（best-effort，目标已删时缺省）；`reason` 只存枚举，举报人备注在 `reporter_note`。
 

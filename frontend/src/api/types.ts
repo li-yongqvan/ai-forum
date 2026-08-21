@@ -109,6 +109,8 @@ export interface UserProfile {
   follower_count: number
   following_count: number
   viewer?: FollowViewer
+  /** #34：是否被封禁。仅 admin / 本人响应含该字段（服务端门控）。 */
+  banned?: boolean
 }
 
 export type FollowTargetType = 'user' | 'board' | 'topic'

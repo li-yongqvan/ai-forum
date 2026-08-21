@@ -9,7 +9,11 @@ type Repo interface {
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByID(ctx context.Context, id int64) (*User, error)
-	UpdateUserStatus(ctx context.Context, id int64, status string) error
+	// SetBanned 条件更新 active→banned；RowsAffected=0 → ErrAlreadyBanned（幂等防重复审计，#34）。
+	// 注意：RowsAffected=0 不区分「已封禁」与「不存在」——存在性由调用方先 GetUserByID 保证（评审 Q3 附）。
+	SetBanned(ctx context.Context, id int64) error
+	// SetActive 条件更新 banned→active；RowsAffected=0 → ErrNotBanned（#34）。
+	SetActive(ctx context.Context, id int64) error
 
 	GetInvitationCode(ctx context.Context, code string) (*InvitationCode, error)
 	MarkInvitationCodeUsed(ctx context.Context, id int64, usedBy int64) error

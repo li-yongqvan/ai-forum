@@ -2,22 +2,26 @@ package handler
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi/middleware"
 	"github.com/li-yongqvan/ai-forum/backend/moderation"
+	"github.com/li-yongqvan/ai-forum/backend/user"
 )
 
-// ModerationHandler 暴露治理域端点（#33：举报创建需登录；队列/处理需 mod 组）。
+// ModerationHandler 暴露治理域端点（#33：举报创建需登录；队列/处理需 mod 组；#34 ban/unban 聚合 user 域）。
 type ModerationHandler struct {
-	svc moderation.Service
+	svc   moderation.Service
+	users user.Service
 }
 
-// NewModerationHandler 装配 ModerationHandler。
-func NewModerationHandler(svc moderation.Service) *ModerationHandler {
-	return &ModerationHandler{svc: svc}
+// NewModerationHandler 装配 ModerationHandler（users 供 #34 封禁/解封跨包聚合）。
+func NewModerationHandler(svc moderation.Service, users user.Service) *ModerationHandler {
+	return &ModerationHandler{svc: svc, users: users}
 }
 
 // respondModerationError 将治理域哨兵错误映射为 HTTP 状态。
@@ -133,6 +137,93 @@ func (h *ModerationHandler) HandleReport(c *gin.Context) {
 		Note:         req.Note,
 	}); err != nil {
 		respondModerationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+// respondAdminError 将治理操作的 user 域哨兵错误映射为 HTTP 状态（#34 ban/unban）。
+func respondAdminError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, user.ErrNotFound):
+		respondError(c, http.StatusNotFound, "用户不存在")
+	case errors.Is(err, user.ErrSelfBan):
+		respondError(c, http.StatusBadRequest, "不能封禁自己")
+	case errors.Is(err, user.ErrCannotBanAdmin):
+		respondError(c, http.StatusBadRequest, "不能封禁管理员")
+	case errors.Is(err, user.ErrAlreadyBanned):
+		respondError(c, http.StatusConflict, "该用户已被封禁")
+	case errors.Is(err, user.ErrNotBanned):
+		respondError(c, http.StatusConflict, "该用户未被封禁")
+	default:
+		respondError(c, http.StatusInternalServerError, "服务器内部错误")
+	}
+}
+
+// adminBanReq 封禁/解封请求体（原因必填，≤500；与 RecordAction 校验同源，评审 Q1 条件 3）。
+type adminBanReq struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+// BanUser POST /api/v1/moderation/users/:id/ban（admin 组）。
+// 状态先改（user.Ban 幂等条件更新）→ 审计后写（moderation.RecordAction）；审计失败 → 500 + status_changed:true（§6.1/F6）。
+func (h *ModerationHandler) BanUser(c *gin.Context) {
+	h.banUser(c, false)
+}
+
+// UnbanUser POST /api/v1/moderation/users/:id/unban（admin 组）。
+func (h *ModerationHandler) UnbanUser(c *gin.Context) {
+	h.banUser(c, true)
+}
+
+func (h *ModerationHandler) banUser(c *gin.Context, unban bool) {
+	claims, ok := middleware.Identity(c)
+	if !ok {
+		respondError(c, http.StatusUnauthorized, "需要登录")
+		return
+	}
+	id, ok := pathID(c)
+	if !ok {
+		respondError(c, http.StatusBadRequest, "参数不合法")
+		return
+	}
+	var req adminBanReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "请填写封禁原因")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" || len([]rune(reason)) > 500 { // 与 RecordAction 同源（trim + 非空 + ≤500 runes）
+		respondError(c, http.StatusBadRequest, "原因必填且不能超过 500 字")
+		return
+	}
+	ctx := c.Request.Context()
+
+	// 1) 状态先改（user 域，条件更新幂等：#34 §6.1）
+	var stateErr error
+	if unban {
+		stateErr = h.users.Unban(ctx, user.UnbanCmd{OperatorID: claims.UserID, TargetID: id})
+	} else {
+		stateErr = h.users.Ban(ctx, user.BanCmd{OperatorID: claims.UserID, TargetID: id})
+	}
+	if stateErr != nil {
+		respondAdminError(c, stateErr)
+		return
+	}
+
+	// 2) 审计后写（moderation 域）；失败不吞错（F6：500 + status_changed:true，供前端区分）
+	action := moderation.ActionBan
+	if unban {
+		action = moderation.ActionUnban
+	}
+	if err := h.svc.RecordAction(ctx, moderation.RecordActionCmd{
+		ModeratorID: claims.UserID,
+		Action:      action,
+		TargetID:    id,
+		Reason:      reason,
+	}); err != nil {
+		slog.Error("治理审计写入失败", "operator", claims.UserID, "action", action, "target", id, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "账号状态已更新，但审计记录失败，请联系管理员", "status_changed": true})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
