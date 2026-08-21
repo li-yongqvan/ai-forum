@@ -51,6 +51,8 @@
 | POST | `/api/v1/moderation/users/:id/ban` | admin（`RequireRole("admin")`，#34） | `{reason}`（必填 ≤500；写 `ban_user` 审计） | 200 `{"message":"ok"}` |
 | POST | `/api/v1/moderation/users/:id/unban` | admin（#34） | `{reason}`（必填 ≤500；写 `unban_user` 审计） | 200 `{"message":"ok"}` |
 
+> ban/unban 端点的错误映射在 handler 层（`respondAdminError`，user 域哨兵）：404 用户不存在 / 400 不能封禁自己·不能封禁管理员·原因必填≤500 / 409 该用户已被封禁·未被封禁；审计写入失败 → 500 `{status_changed:true}`（状态已变、需对账，见决策记录）。
+
 `ReportView` 含 enrich 字段 `reporter_username`/`target_title`（best-effort，目标已删时缺省）；`reason` 只存枚举，举报人备注在 `reporter_note`。
 
 ## 性能特征（Performance）

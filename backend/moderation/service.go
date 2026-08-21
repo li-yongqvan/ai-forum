@@ -19,7 +19,7 @@ const (
 	ActionDeletePost    = "delete_post"    // 删除内容（帖子）→ 追加审计
 	ActionDeleteComment = "delete_comment" // 删除内容（评论）→ 追加审计
 	ActionWarn          = "warn"           // 警告用户 → 追加审计
-	ActionBan           = "ban_user"       // 封禁用户 → 追加审计（仅 admin，§5.0；#34 封禁闭环，本票不启用）
+	ActionBan           = "ban_user"       // 封禁用户 → 追加审计（仅 admin，§5.0；#34 RecordAction 已启用）
 	ActionUnban         = "unban_user"     // 解封用户 → 追加审计（仅 admin；#34）
 )
 
