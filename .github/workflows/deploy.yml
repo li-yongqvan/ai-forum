@@ -41,9 +41,7 @@ jobs:
 
   frontend-test:
     runs-on: ubuntu-latest
-    # 非阻塞过渡（地图 Roadmap 第 2 项）：与 lint 同模式，不进 deploy needs（非阻塞 job 挂 needs 有静默跳部署风险）
-    continue-on-error: true
-    # 转正条件：frontend-test job 连续 5 次全绿后，同时「移除 continue-on-error」+「deploy needs 加入 frontend-test」→ 转阻塞
+    # 已转正（2026-08-21）：frontend-test 连续 5 次全绿达成 → 阻塞（移除 continue-on-error，deploy needs 已加入）
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,7 +57,7 @@ jobs:
         run: npm run test:unit
 
   deploy:
-    needs: test
+    needs: [test, frontend-test]
     runs-on: ubuntu-latest
     concurrency: # 防两次 push 部署互撞（#8 变体：容器 nginx @8888）
       group: deploy-prod
