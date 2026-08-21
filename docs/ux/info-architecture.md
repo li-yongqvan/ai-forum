@@ -165,6 +165,7 @@ L2 二级页（push 全屏，隐藏 Tab；FAB 显隐见 §5.1）
 - **举报原因枚举**：垃圾广告 / 违法违规 / 人身攻击 / 抄袭侵权 / 引战灌水 / 其他（选「其他」时备注必填）。
 - **防重复语义**：同一举报者对同一目标存在 **status=pending** 的举报时禁止重复提交（DB 部分唯一索引 `UNIQUE(reporter,target,type) WHERE status='pending'`）；已结案（resolved/dismissed）后可再次举报。
 - 流程：举报（帖子/评论/用户「···」→ 弹窗选原因）→ moderator/admin 在 /reports 处理 → 处理弹窗动作集（按角色）：**忽略**(dismissed) / **删除内容**(resolved+删除) / **警告**(resolved+警告) / **封禁用户**(resolved+封禁，仅 admin)；所有动作可附备注 → append `moderation_actions` 审计 → 系统发 `report_result` 通知给举报人（含处理结论）。
+  > **#34 偏离批注（2026-08-21，用户确认）**：举报处理弹窗**不含「封禁用户」动作**（范围收敛）。封禁/解封能力经 admin 组端点 `POST /moderation/users/:id/ban|unban`（写 `ban_user`/`unban_user` 审计）+ 用户主页封禁/解封入口提供；决策记录 `docs/handoffs/grilling-decisions/issue-34-governance-permissions-decisions.md`。
 
 ### 5.7 空状态清单【v2 新增】
 
