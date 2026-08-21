@@ -56,6 +56,7 @@
 4. **地图 issue #1 按里程碑更新**，别攒到收尾。
 5. **CI run 状态优先看服务器落地效果**（git pull 到的 commit、容器重启时间、上传 URL）而不是 GitHub API。
 6. 遇到疑似网络问题：**最多重试 4 次、换验证方式、先排除本地因素（MSYS/路径/编码/配置）再归因网络**。
+7. **gh `--body-file` 路径坑（#34/#47 两次踩到）**：Git Bash 的 `/tmp/xxx` 路径 gh 不识别（被当字面量 → 文件找不到）；`--body '...'` 内联又会被 bash 解释反引号/`$`/换行。可靠做法：正文先 Write 成文件，再 `--body-file` 用 **仓库内相对路径**（如 `docs/xxx.md`）或 **Windows 绝对路径 + `MSYS_NO_PATHCONV=1`**（如 `C:/Users/.../xxx.md`）。
 
 ## 3. 可复用验证命令速查
 
