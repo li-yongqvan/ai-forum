@@ -19,6 +19,13 @@ export class ApiError extends Error {
 
 export const BASE = '/api/v1'
 
+// #34（评审 F1）：会话失效（401）或账号被封禁（403 code=account_banned）时统一调用，
+// 由 auth store 注册清 Pinia state 的回调——仅清 localStorage 不清 store 会让「封禁即登出」失效。
+let authFailureHandler: (() => void) | null = null
+export function setAuthFailureHandler(fn: (() => void) | null): void {
+  authFailureHandler = fn
+}
+
 interface RequestOpts {
   /** 该接口是否要求登录：401 时清除过期 token 并抛错（否则游客容忍，如公开读接口）。 */
   requireAuth?: boolean
@@ -35,22 +42,27 @@ export async function request<T>(method: string, path: string, body?: unknown, o
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
+  if (res.status === 204) return undefined as T
 
-  if (res.status === 401 && opts.requireAuth) {
-    // 登录过期：清 token（D6 401 归一；路由守卫会在下次导航时引导重登）
+  let data: { error?: unknown; code?: unknown } | null = null
+  try {
+    data = await res.json()
+  } catch {
+    /* 非 JSON 错误体 */
+  }
+  const msg = data && typeof data.error === 'string' ? data.error : '请求失败'
+
+  // 会话重置：401（需登录接口）或 403 code=account_banned（被封，F5 机器可读信号）。
+  // 普通 403「权限不足」不清 token（防止 mod 误调 admin 接口被登出）。
+  const sessionLost =
+    (res.status === 401 && opts.requireAuth) || (res.status === 403 && data?.code === 'account_banned')
+  if (sessionLost) {
     setToken(null)
+    authFailureHandler?.()
   }
 
   if (!res.ok) {
-    let msg = '请求失败'
-    try {
-      const data = await res.json()
-      if (data && typeof data.error === 'string') msg = data.error
-    } catch {
-      /* 非 JSON 错误体，用默认文案 */
-    }
     throw new ApiError(res.status, msg)
   }
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
+  return data as T
 }

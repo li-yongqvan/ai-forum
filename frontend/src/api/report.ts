@@ -39,3 +39,15 @@ export function countReports(status: ReportStatus = 'pending') {
 export function handleReport(id: number, action: string, note?: string) {
   return request('POST', `/moderation/reports/${id}/handle`, { action, note }, { requireAuth: true })
 }
+
+// ---- #34 封禁/解封（仅 admin；原因必填 ≤500，服务端校验） ----
+
+/** 封禁用户（写 moderation_actions ban_user 审计）。 */
+export function banUser(id: number, reason: string) {
+  return request('POST', `/moderation/users/${id}/ban`, { reason }, { requireAuth: true })
+}
+
+/** 解封用户（写 moderation_actions unban_user 审计）。 */
+export function unbanUser(id: number, reason: string) {
+  return request('POST', `/moderation/users/${id}/unban`, { reason }, { requireAuth: true })
+}

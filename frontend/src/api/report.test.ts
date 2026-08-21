@@ -46,6 +46,26 @@ describe('api/report', () => {
     )
   })
 
+  it('banUser 封禁（POST /moderation/users/:id/ban, requireAuth）', () => {
+    api.banUser(7, '人身攻击')
+    expect(mocked).toHaveBeenCalledWith(
+      'POST',
+      '/moderation/users/7/ban',
+      { reason: '人身攻击' },
+      { requireAuth: true },
+    )
+  })
+
+  it('unbanUser 解封（POST /moderation/users/:id/unban, requireAuth）', () => {
+    api.unbanUser(7, '误封纠正')
+    expect(mocked).toHaveBeenCalledWith(
+      'POST',
+      '/moderation/users/7/unban',
+      { reason: '误封纠正' },
+      { requireAuth: true },
+    )
+  })
+
   it('REPORT_REASONS 为 IA §5.6 六枚举', () => {
     expect(api.REPORT_REASONS).toEqual(['垃圾广告', '违法违规', '人身攻击', '抄袭侵权', '引战灌水', '其他'])
   })

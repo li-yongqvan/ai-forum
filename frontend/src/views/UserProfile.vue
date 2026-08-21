@@ -1,15 +1,18 @@
 <script setup lang="ts">
-// 用户主页（v2 §4：GET /users/:id 公开资料 + 帖子流 + 关注/私信按钮）
+// 用户主页（v2 §4：GET /users/:id 公开资料 + 帖子流 + 关注/私信按钮；
+// #34：admin 加封禁/解封入口 + 封禁徽标 + 用户举报入口，兑现 IA §5.5 / #33 D3）
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { showToast } from 'vant'
 import { useAuthStore } from '../stores/auth'
 import * as api from '../api/content'
+import { banUser, unbanUser } from '../api/report'
 import type { UserProfile } from '../api/types'
 import { goLoginWithReturn } from '../router'
 import { formatTime } from '../utils/format'
 import Avatar from '../components/Avatar.vue'
 import PostList from '../components/PostList.vue'
+import ReportSheet from '../components/ReportSheet.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -45,6 +48,46 @@ async function toggleFollow() {
 function onMessage() {
   showToast('私信即将上线')
 }
+
+// ---- #34 用户举报入口（复用 ReportSheet，target_type=user；未登录引导登录） ----
+const reportShow = ref(false)
+function onReport() {
+  if (!auth.isLoggedIn) {
+    goLoginWithReturn(route.fullPath)
+    return
+  }
+  reportShow.value = true
+}
+
+// ---- #34 封禁/解封（仅 admin；原因必填 ≤500） ----
+const banReason = ref('')
+const banDialog = ref({ show: false, isUnban: false, title: '' })
+function openBan(isUnban: boolean) {
+  banReason.value = ''
+  banDialog.value = { show: true, isUnban, title: isUnban ? '解封用户' : '封禁用户' }
+}
+/** van-dialog before-close：confirm 时校验原因并提交；空原因/失败时保持弹窗。 */
+function beforeBanClose(action: string): boolean | Promise<boolean> {
+  if (action !== 'confirm') return true
+  const reason = banReason.value.trim()
+  if (!reason) {
+    showToast('请填写封禁原因')
+    return false
+  }
+  return submitBan(reason)
+}
+async function submitBan(reason: string): Promise<boolean> {
+  try {
+    if (banDialog.value.isUnban) await unbanUser(id.value, reason)
+    else await banUser(id.value, reason)
+    if (profile.value) profile.value.banned = !banDialog.value.isUnban
+    showToast(banDialog.value.isUnban ? '已解封' : '已封禁')
+    return true
+  } catch (e) {
+    showToast((e as Error).message || '操作失败')
+    return false
+  }
+}
 </script>
 
 <template>
@@ -54,7 +97,10 @@ function onMessage() {
         <div class="prow">
           <Avatar :name="profile.username" :size="56" />
           <div class="pinfo">
-            <div class="pname">{{ profile.username }}</div>
+            <div class="pname">
+              {{ profile.username }}
+              <span v-if="profile.banned" class="bbadge">该用户已封禁</span>
+            </div>
             <div class="pbio">{{ profile.bio || '这个人很懒，什么都没写' }}</div>
             <div class="pjoined">加入于 {{ formatTime(profile.joined_at) }}</div>
           </div>
@@ -69,10 +115,33 @@ function onMessage() {
             {{ following ? '已关注' : '关注' }}
           </button>
           <button class="btn ghost" @click="onMessage">私信</button>
+          <!-- 举报登录墙：按钮始终显示（非本人），未登录点击引导登录（IA §4 登录墙） -->
+          <button class="btn ghost" @click="onReport">举报</button>
+          <button v-if="auth.isAdmin" class="btn danger" @click="openBan(!!profile.banned)">
+            {{ profile.banned ? '解封' : '封禁' }}
+          </button>
         </div>
       </div>
 
       <PostList :fetcher="fetcher" empty-title="TA 还没有发布过帖子" />
+
+      <ReportSheet v-model:show="reportShow" target-type="user" :target-id="id" />
+      <van-dialog
+        v-model:show="banDialog.show"
+        :title="banDialog.title"
+        show-cancel-button
+        :before-close="beforeBanClose"
+      >
+        <div class="ban-reason-wrap">
+          <textarea
+            v-model="banReason"
+            class="ban-reason"
+            rows="3"
+            maxlength="500"
+            placeholder="请输入封禁原因（必填，≤500 字）"
+          />
+        </div>
+      </van-dialog>
     </template>
   </div>
 </template>
@@ -95,6 +164,17 @@ function onMessage() {
 .pname {
   font-size: 17px;
   font-weight: 800;
+}
+.bbadge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+  color: #fff;
+  background: #e64545;
 }
 .pbio {
   font-size: 12.5px;
@@ -128,9 +208,11 @@ function onMessage() {
 .pacts {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
 }
 .btn {
   flex: 1;
+  min-width: 70px;
   height: 40px;
   border-radius: 12px;
   font-size: 14px;
@@ -145,5 +227,23 @@ function onMessage() {
 .btn.ghost {
   background: var(--surface-2);
   color: var(--ink);
+}
+.btn.danger {
+  background: #e64545;
+  color: #fff;
+}
+.ban-reason-wrap {
+  padding: 12px 16px;
+}
+.ban-reason {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  resize: none;
 }
 </style>
