@@ -120,6 +120,7 @@ jobs:
           host: ${{ env.SSH_HOST }}
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
+          port: 2222   # 服务器 sshd 在 2222（2026-08-23 迁移；默认 22 曾致 deploy 失败）
           source: frontend/dist/*
           target: /home/liyongquan/ai-forum/frontend/dist
           strip_components: 2
@@ -131,6 +132,7 @@ jobs:
           host: ${{ env.SSH_HOST }}
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
+          port: 2222   # 服务器 sshd 在 2222
           source: api-image.tar.gz
           target: /tmp
       - name: Deploy to server
@@ -141,6 +143,7 @@ jobs:
           host: ${{ env.SSH_HOST }}
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
+          port: 2222   # 服务器 sshd 在 2222
           script: |
             set -e
             cd ~/ai-forum
