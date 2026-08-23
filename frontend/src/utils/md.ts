@@ -37,7 +37,7 @@ export function md(src: string): string {
   s = s.replace(/`([^`\n]+)`/g, (_m, code: string) => pushBlock(`<code>${code}</code>`))
   // 外链图片（先于裸链接，仅 http(s)）
   s = s.replace(/(https?:\/\/[^\s]+\.(?:png|jpe?g|gif|webp))/gi, (m: string) =>
-    pushBlock(`<img src="${m}" alt="图片" loading="lazy">`),
+    pushBlock(`<img src="${m}" alt="图片" loading="lazy" class="content-img">`),
   )
   // [text](url)
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, text: string, url: string) =>

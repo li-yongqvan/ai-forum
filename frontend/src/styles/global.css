@@ -111,6 +111,9 @@ button,
   border-radius: 12px;
   margin: 6px 0;
 }
+.md .content-img {
+  cursor: zoom-in;
+}
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

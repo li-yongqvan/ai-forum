@@ -9,6 +9,7 @@ import type { CommentNode, Post } from '../api/types'
 import { goLoginWithReturn } from '../router'
 import { formatTime } from '../utils/format'
 import { md } from '../utils/md'
+import { handleContentImageClick } from '../utils/imagePreview'
 import { insertAtCursor } from '../utils/editor'
 import AppIcon from '../components/AppIcon.vue'
 import Avatar from '../components/Avatar.vue'
@@ -351,7 +352,7 @@ function onImage(url: string) {
 
     <h1 class="dtitle">{{ post.title }}</h1>
     <!-- eslint-disable-next-line vue/no-v-html -->
-    <div v-html="md(post.content)"></div>
+    <div v-html="md(post.content)" @click="handleContentImageClick"></div>
 
     <div class="dacts">
       <button class="dact" :class="{ on: post.viewer?.liked }" @click="toggleLike">

@@ -18,6 +18,7 @@ vi.mock('../router', () => ({ goLoginWithReturn: vi.fn() }))
 vi.mock('vant', () => ({
   showToast: vi.fn(),
   showConfirmDialog: vi.fn(),
+  showImagePreview: vi.fn(),
 }))
 // 可变登录态：回复流用例需切 isLoggedIn=true（现有用例默认 false，向后兼容）
 const authState = vi.hoisted(() => ({ isLoggedIn: false, user: null, isMod: false }))
@@ -32,7 +33,7 @@ vi.mock('../api/content', () => ({
 
 import PostDetail from './PostDetail.vue'
 import * as api from '../api/content'
-import { showToast } from 'vant'
+import { showImagePreview, showToast } from 'vant'
 
 function mockPost(): Post {
   return {
@@ -334,5 +335,30 @@ describe('PostDetail 回复评论：自动展开分支 + 滚动定位新评论�
     // 兜底命中 999（tree 末元素）→ 滚动到它
     expect(document.querySelector).toHaveBeenCalledWith('[data-comment-id="999"]')
     expect(fakeEl.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+  })
+})
+
+describe('PostDetail 正文图片点击放大（#50）', () => {
+  it('点正文第 2 张图 → showImagePreview(images, startPosition=1, showIndex=true)', async () => {
+    vi.mocked(api.getPost).mockResolvedValue({
+      ...mockPost(),
+      content: 'https://a.com/1.png\n\nhttps://a.com/2.png',
+    })
+    vi.mocked(api.getComments).mockResolvedValue({ post_id: 5, comments: [] })
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+    const imgs = wrapper.findAll('.md img.content-img')
+    expect(imgs.length).toBe(2)
+    for (const w of imgs) {
+      Object.defineProperty(w.element, 'complete', { configurable: true, value: true })
+      Object.defineProperty(w.element, 'naturalWidth', { configurable: true, value: 100 })
+    }
+    await imgs[1].trigger('click')
+    await flushPromises()
+    expect(showImagePreview).toHaveBeenCalledWith({
+      images: ['https://a.com/1.png', 'https://a.com/2.png'],
+      startPosition: 1,
+      showIndex: true,
+    })
   })
 })
