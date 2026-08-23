@@ -9,6 +9,8 @@ vi.mock('../stores/auth', () => ({ useAuthStore: () => ({ user: null, isMod: fal
 // md 走 v-html：mock 成简单 HTML 片段，避免真实 md 依赖；formatTime 静态化
 vi.mock('../utils/md', () => ({ md: (s: string) => `<p>${s}</p>` }))
 vi.mock('../utils/format', () => ({ formatTime: () => '刚刚' }))
+// #50 F4：本测试不测图片预览，mock 掉 util，避免组件新增导入后传递加载真实 vant（本仓「凡碰 vant 必 mock」惯例）
+vi.mock('../utils/imagePreview', () => ({ handleContentImageClick: vi.fn() }))
 
 function makeNode(id: number, over: Partial<CommentNode> = {}): CommentNode {
   return {

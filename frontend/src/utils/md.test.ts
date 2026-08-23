@@ -66,3 +66,11 @@ describe('plainText 摘要', () => {
     expect(plainText('前\n```\ncode\n```\n后')).toContain('[代码]')
   })
 })
+
+describe('md 图片渲染（#50：content-img class 挂钩预览）', () => {
+  it('外链图渲染带 content-img class，两图各一次', () => {
+    const out = md('https://a.com/1.png\n\nhttps://a.com/2.png')
+    expect(out).toContain('class="content-img"')
+    expect((out.match(/<img/g) ?? []).length).toBe(2)
+  })
+})
