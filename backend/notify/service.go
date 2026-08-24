@@ -11,7 +11,7 @@ import (
 // CreateNotificationCmd 构造通知。快照字段（ActorName/ActorAvatar/TargetTitle）由调用方算好传入。
 type CreateNotificationCmd struct {
 	RecipientID int64
-	Type        string // follow | like | comment | reply | report_result
+	Type        string // follow | like | comment | reply | report_result | report_handled
 	ActorID     *int64
 	ActorName   *string
 	ActorAvatar *string
@@ -54,7 +54,7 @@ type ListQuery struct {
 	UnreadOnly bool // 仅取未读（通知页 ?unread=1）
 }
 
-// Service 是通知域的对外接口。通知类型跳转锚点见 IA v2 §4（follow→用户主页，like/comment/reply→帖子详情评论锚点，report_result→结果提示）。
+// Service 是通知域的对外接口。通知类型跳转锚点见 IA v2 §4（follow→用户主页，like/comment/reply→帖子详情评论锚点，report_result/report_handled→结果提示）。
 type Service interface {
 	CreateNotification(ctx context.Context, in CreateNotificationCmd) error
 	MarkRead(ctx context.Context, id, recipientID int64) error
@@ -76,9 +76,9 @@ var (
 
 // ---- 实现 ----
 
-// validTypes 通知类型白名单（与 schema CHECK 一致）。
+// validTypes 通知类型白名单（与 schema CHECK 一致：#53 加 report_handled，被举报人视角的举报处理通知）。
 var validTypes = map[string]bool{
-	"follow": true, "like": true, "comment": true, "reply": true, "report_result": true,
+	"follow": true, "like": true, "comment": true, "reply": true, "report_result": true, "report_handled": true,
 }
 
 type service struct {

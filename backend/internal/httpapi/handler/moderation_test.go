@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -236,5 +237,108 @@ func TestModerationHandlingFlow(t *testing.T) {
 	notifs = bobNotifs()
 	if len(notifs) == 0 || notifs[0].TargetTitle == nil || *notifs[0].TargetTitle != "已警告违规用户" {
 		t.Errorf("warn 通知 = %+v", notifs)
+	}
+}
+
+// #53 被举报人触达：dismiss 不通知作者（0 条）；delete_post/warn 通知作者（累计语义，最新在前）。
+func TestReportedUserNotification(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerNotifyUser(t, r, gdb, "alice", "RN-N1") // 作者
+	bob := registerNotifyUser(t, r, gdb, "bob", "RN-N2")     // 举报人
+	registerNotifyUser(t, r, gdb, "carol", "RN-N3")
+	makeModerator(t, gdb, "carol")
+	carol := login(t, r, "carol")
+
+	listPending := func() reportList {
+		w := doJSON(t, r, http.MethodGet, "/api/v1/moderation/reports?status=pending", nil, carol.Token)
+		var l reportList
+		json.Unmarshal(w.Body.Bytes(), &l)
+		return l
+	}
+	handle := func(id int64, action, note string) int {
+		w := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/v1/moderation/reports/%d/handle", id), map[string]any{
+			"action": action, "note": note,
+		}, carol.Token)
+		return w.Code
+	}
+	aliceNotifs := func() []reportNotifyView {
+		w := doJSON(t, r, http.MethodGet, "/api/v1/notifications", nil, alice.Token)
+		var l notifListFull
+		json.Unmarshal(w.Body.Bytes(), &l)
+		return l.Items
+	}
+
+	// 场景 1：dismiss → 作者 0 条（#53 D2 不打扰被举报人）
+	post1 := createPost(t, r, alice.Token, 1, "帖1")
+	if code := reportCode(t, r, bob.Token, "post", post1.ID, "垃圾广告", ""); code != http.StatusCreated {
+		t.Fatalf("建举报 = %d", code)
+	}
+	if code := handle(listPending().Items[0].ID, "dismiss", "证据不足"); code != http.StatusOK {
+		t.Fatalf("dismiss = %d", code)
+	}
+	if got := aliceNotifs(); len(got) != 0 {
+		t.Errorf("dismiss 后作者通知 = %+v, want 0 条", got)
+	}
+
+	// 场景 2：delete_post → 作者 1 条 report_handled（累计 1）
+	post2 := createPost(t, r, alice.Token, 1, "帖2")
+	if code := reportCode(t, r, bob.Token, "post", post2.ID, "违法违规", ""); code != http.StatusCreated {
+		t.Fatalf("建举报 = %d", code)
+	}
+	if code := handle(listPending().Items[0].ID, "delete_post", "违规删除"); code != http.StatusOK {
+		t.Fatalf("delete_post = %d", code)
+	}
+	got := aliceNotifs()
+	if len(got) != 1 || got[0].Type != "report_handled" || got[0].TargetTitle == nil || *got[0].TargetTitle != "你的内容因「违法违规」被举报，已删除" {
+		t.Errorf("delete_post 后作者通知 = %+v", got)
+	}
+
+	// 场景 3：warn → 作者累计 2 条，最新为 warn 文案（#53 warn 也通知，反转 O4）
+	post3 := createPost(t, r, alice.Token, 1, "帖3")
+	if code := reportCode(t, r, bob.Token, "post", post3.ID, "人身攻击", ""); code != http.StatusCreated {
+		t.Fatalf("建举报 = %d", code)
+	}
+	if code := handle(listPending().Items[0].ID, "warn", "警告一次"); code != http.StatusOK {
+		t.Fatalf("warn = %d", code)
+	}
+	got = aliceNotifs()
+	if len(got) != 2 || got[0].Type != "report_handled" || got[0].TargetTitle == nil || *got[0].TargetTitle != "你因「人身攻击」被举报，已警告" {
+		t.Errorf("warn 后作者通知（累计 2 条，最新 warn）= %+v", got)
+	}
+}
+
+// #53 举报频控：同举报人 10 分钟 5 连报全 201；第 6 次（全新目标）→ 429 + 提示，不落库。
+func TestReportRateLimit(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerNotifyUser(t, r, gdb, "alice", "RL-L1") // 作者
+	bob := registerNotifyUser(t, r, gdb, "bob", "RL-L2")     // 举报人
+
+	// 5 个不同帖子各报一次 → 201（不同目标避开 uq_reports_pending 409）
+	for i := 0; i < 5; i++ {
+		p := createPost(t, r, alice.Token, 1, fmt.Sprintf("频控帖%d", i+1))
+		if code := reportCode(t, r, bob.Token, "post", p.ID, "垃圾广告", ""); code != http.StatusCreated {
+			t.Fatalf("第 %d 次举报 = %d, want 201", i+1, code)
+		}
+	}
+	// 第 6 个全新帖子 → 429（打旧目标会被 409 先拦，无法验证 429）
+	p6 := createPost(t, r, alice.Token, 1, "频控帖6")
+	w := doJSON(t, r, http.MethodPost, "/api/v1/reports", map[string]any{
+		"target_type": "post", "target_id": p6.ID, "reason": "垃圾广告",
+	}, bob.Token)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 6 次 = %d, want 429, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "举报过于频繁") {
+		t.Errorf("429 body 应含提示, got %s", w.Body.String())
+	}
+	// 不落库
+	var n int64
+	gdb.Table("moderation.reports").Where("reporter_id = ?", bob.User.ID).Count(&n)
+	if n != 5 {
+		t.Errorf("reports 计数 = %d, want 5（超限不落库）", n)
 	}
 }

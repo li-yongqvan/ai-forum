@@ -62,14 +62,14 @@ describe('Reports 举报处理队列', () => {
     const wrapper = await mountWith([report()])
     await wrapper.find('.hbtn').trigger('click')
     const labels = wrapper.findAll('.act').map((w) => w.text())
-    expect(labels).toEqual(['忽略', '删除帖子', '警告（仅留痕，对方不会收到通知）'])
+    expect(labels).toEqual(['忽略', '删除帖子', '警告（会通知被举报人）'])
   })
 
   it('评论目标 → 删除评论动作', async () => {
     const wrapper = await mountWith([report({ id: 2, target_type: 'comment', target_id: 5, target_title: '评论内容' })])
     await wrapper.find('.hbtn').trigger('click')
     const labels = wrapper.findAll('.act').map((w) => w.text())
-    expect(labels).toEqual(['忽略', '删除评论', '警告（仅留痕，对方不会收到通知）'])
+    expect(labels).toEqual(['忽略', '删除评论', '警告（会通知被举报人）'])
   })
 
   it('选择动作 + 备注 → 调 handleReport 并刷新', async () => {

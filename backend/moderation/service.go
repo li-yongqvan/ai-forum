@@ -1,6 +1,6 @@
 // Package moderation 是治理域（#4 服务候选边界）。本文件实现举报闭环：举报 → 处理（删除/警告/忽略）
-// → append 审计 → report_result 通知（#33）。跨包依赖经 seam（ContentGateway/UserGateway/Notifier）注入，
-// 不 import content/user/notify（S1，仿 content.UserProvider 先例）。
+// → append 审计 → 双通知（report_result 给举报人 + report_handled 给被举报人，#53）。跨包依赖经
+// seam（ContentGateway/UserGateway/Notifier）注入，不 import content/user/notify（S1，仿 content.UserProvider 先例）。
 package moderation
 
 import (
@@ -128,7 +128,7 @@ type NotificationCmd struct {
 	TargetTitle *string
 }
 
-// Notifier 供治理域发通知（report_result 只发举报人，D2）。
+// Notifier 供治理域发通知（#53：report_result 给举报人 + report_handled 给被举报人）。
 type Notifier interface {
 	CreateNotification(ctx context.Context, in NotificationCmd) error
 }
@@ -139,6 +139,13 @@ var (
 	ErrNotFound         = errors.New("moderation: 举报或目标不存在")
 	ErrDuplicatePending = errors.New("moderation: 同一举报者 pending 期内重复举报")
 	ErrInvalidAction    = errors.New("moderation: 非法处理动作或权限越界")
+	ErrRateLimited      = errors.New("moderation: 举报过于频繁，请稍后再试")
+)
+
+// ---- 举报频控（#53 D3：同一举报人时间窗口内 ≤N 次，全局跨目标） ----
+const (
+	reportWindow = 10 * time.Minute
+	reportLimit  = 5
 )
 
 // ---- 白名单 ----
@@ -221,7 +228,7 @@ func NewService(repo Repo, content ContentGateway, users UserGateway, notify Not
 
 var _ Service = (*service)(nil)
 
-// CreateReport 举报：校验原因枚举/目标类型 → 存在性 + 自举报拒绝（F7）→ pending 防重复 → 落库。返回举报 id。
+// CreateReport 举报：校验原因枚举/目标类型 → 存在性 + 自举报拒绝（F7）→ pending 防重复 → 频控 → 落库。返回举报 id。
 func (s *service) CreateReport(ctx context.Context, in CreateReportCmd) (int64, error) {
 	if !validTargetType(in.TargetType) || !validReasons[in.Reason] {
 		return 0, ErrInvalidAction
@@ -232,6 +239,8 @@ func (s *service) CreateReport(ctx context.Context, in CreateReportCmd) (int64, 
 	}
 
 	// 目标存在性 + 自举报拒绝（F7）。post/comment 经内容网关解析作者；user 直接比对并查存在。
+	// #53：顺路快照被举报人 id，供处理后补发 report_handled（delete 路径幂等不 ResolveTarget）。
+	var targetAuthorID *int64
 	switch in.TargetType {
 	case "post", "comment":
 		ref, err := s.content.ResolveTarget(ctx, in.TargetType, in.TargetID)
@@ -241,6 +250,7 @@ func (s *service) CreateReport(ctx context.Context, in CreateReportCmd) (int64, 
 		if ref.AuthorID == in.ReporterID {
 			return 0, ErrInvalidAction // 不能举报自己的内容
 		}
+		targetAuthorID = &ref.AuthorID
 	case "user":
 		if in.TargetID == in.ReporterID {
 			return 0, ErrInvalidAction
@@ -248,9 +258,10 @@ func (s *service) CreateReport(ctx context.Context, in CreateReportCmd) (int64, 
 		if _, err := s.users.GetUserView(ctx, in.TargetID); err != nil {
 			return 0, err
 		}
+		targetAuthorID = &in.TargetID
 	}
 
-	// 防重复举报（uq_reports_pending 主防 + 此处预检双保险）
+	// 防重复举报（uq_reports_pending 主防 + 此处预检双保险）：同目标 pending 重复的 409 语义优先于全局频控 429（#53 §6.4）
 	dup, err := s.repo.PendingExists(ctx, in.ReporterID, in.TargetType, in.TargetID)
 	if err != nil {
 		return 0, err
@@ -258,13 +269,25 @@ func (s *service) CreateReport(ctx context.Context, in CreateReportCmd) (int64, 
 	if dup {
 		return 0, ErrDuplicatePending
 	}
+
+	// 举报频控（#53 D3：全局窗口，同一举报人 reportWindow 内 ≤reportLimit 次）。软限（count+insert 非原子，
+	// 并发可少量超发，MVP 接受；硬不变量仍是 uq_reports_pending）；不落库（D4）。
+	n, err := s.repo.CountReportsSince(ctx, in.ReporterID, time.Now().Add(-reportWindow))
+	if err != nil {
+		return 0, err
+	}
+	if n >= reportLimit {
+		return 0, ErrRateLimited
+	}
+
 	rep := &Report{
-		ReporterID:   in.ReporterID,
-		TargetType:   in.TargetType,
-		TargetID:     in.TargetID,
-		Reason:       in.Reason,
-		ReporterNote: notePtr(in.Note),
-		Status:       StatusPending,
+		ReporterID:     in.ReporterID,
+		TargetType:     in.TargetType,
+		TargetID:       in.TargetID,
+		TargetAuthorID: targetAuthorID,
+		Reason:         in.Reason,
+		ReporterNote:   notePtr(in.Note),
+		Status:         StatusPending,
 	}
 	if err := s.repo.CreateReport(ctx, rep); err != nil {
 		return 0, err
@@ -346,23 +369,66 @@ func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
 		return err
 	}
 
-	// ---- 提交后：report_result 通知举报人（D2/IA §5.6「所有动作→通知举报人」，含 dismiss 结论）；失败打日志不回滚（S3） ----
-	s.notifyReportResult(ctx, r, in.Action)
+	// ---- 提交后：通知举报人（report_result）+ 被举报人（report_handled，#53 D1/D2）。
+	// 两条都在事务提交后发、各自吞错打日志不回滚（S3），互不阻塞。 ----
+	s.notifyReportOutcome(ctx, r, in.Action)
 	return nil
 }
 
-func (s *service) notifyReportResult(ctx context.Context, r *Report, action string) {
+// notifyReportOutcome 提交后发双通知：举报人 report_result（所有动作含 dismiss 结论）+ 被举报人 report_handled（仅 delete/warn，#53 D2）。
+func (s *service) notifyReportOutcome(ctx context.Context, r *Report, action string) {
 	title := conclusionFor(action)
-	notifyErr := s.notify.CreateNotification(ctx, NotificationCmd{
+	if notifyErr := s.notify.CreateNotification(ctx, NotificationCmd{
 		RecipientID: r.ReporterID,
 		Type:        "report_result",
 		TargetType:  &r.TargetType,
 		TargetID:    &r.TargetID,
 		TargetTitle: &title,
-	})
-	if notifyErr != nil {
+	}); notifyErr != nil {
 		// S3：吞错但必须留日志，否则举报人无声丢失处理结论且无排查线索
 		slog.Warn("report_result 通知发送失败", "report_id", r.ID, "recipient", r.ReporterID, "err", notifyErr)
+	}
+
+	// 被举报人视角：#53 D2 仅 delete/warn；dismiss 不发。
+	if !notifiesReportedUser(action) {
+		return
+	}
+	if r.TargetAuthorID == nil { // 存量 pending（0007 前建）无快照 → 跳过，不 panic
+		slog.Warn("举报缺少 target_author_id，跳过被举报人通知", "report_id", r.ID, "action", action)
+		return
+	}
+	// report_handled：target_title 承载整句文案（刻意语义复用，评审 F2）；TargetType/TargetID 随行下发供未来客户端筛选。
+	authorTitle := handledConclusionFor(action, r.Reason)
+	if notifyErr := s.notify.CreateNotification(ctx, NotificationCmd{
+		RecipientID: *r.TargetAuthorID,
+		Type:        "report_handled",
+		TargetType:  &r.TargetType,
+		TargetID:    &r.TargetID,
+		TargetTitle: &authorTitle,
+	}); notifyErr != nil {
+		slog.Warn("report_handled 通知发送失败", "report_id", r.ID, "recipient", *r.TargetAuthorID, "err", notifyErr)
+	}
+}
+
+// notifiesReportedUser #53 D2：哪些处理动作要通知被举报人（dismiss 不打扰；warn 也通知，反转 #33 O4）。
+func notifiesReportedUser(action string) bool {
+	switch action {
+	case ActionDeletePost, ActionDeleteComment, ActionWarn:
+		return true
+	default:
+		return false
+	}
+}
+
+// handledConclusionFor 给被举报人的结论句（含原因枚举，作者视角；#53 D2，§6.2 不拼 reporter_note）。
+func handledConclusionFor(action, reason string) string {
+	switch action {
+	case ActionDeletePost, ActionDeleteComment:
+		return "你的内容因「" + reason + "」被举报，已删除"
+	case ActionWarn:
+		return "你因「" + reason + "」被举报，已警告"
+	default:
+		return ""
 	}
 }
 

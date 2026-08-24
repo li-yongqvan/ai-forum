@@ -32,14 +32,14 @@ const action = ref('')
 const note = ref('')
 const submitting = ref(false)
 
-// 按目标类型给动作集（D1：忽略/删帖删评/警告；封禁留 #34）。O4：UI 明示警告仅留痕。
+// 按目标类型给动作集（D1：忽略/删帖删评/警告；封禁留 #34）。#53 D2：警告会通知被举报人（反转 O4）。
 const allowedActions = computed(() => {
   const r = current.value
   if (!r) return []
   const acts: { key: string; label: string }[] = [{ key: 'dismiss', label: '忽略' }]
   if (r.target_type === 'post') acts.push({ key: 'delete_post', label: '删除帖子' })
   if (r.target_type === 'comment') acts.push({ key: 'delete_comment', label: '删除评论' })
-  acts.push({ key: 'warn', label: '警告（仅留痕，对方不会收到通知）' })
+  acts.push({ key: 'warn', label: '警告（会通知被举报人）' })
   return acts
 })
 

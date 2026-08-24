@@ -55,6 +55,20 @@ describe('Notifications 通知中心', () => {
     expect(wrapper.find('.dot').exists()).toBe(true)
   })
 
+  it('渲染 report_handled：被举报人视角文案原文透出（#53）', async () => {
+    const wrapper = await mountWith([
+      followNotif({
+        id: 9,
+        type: 'report_handled',
+        actor_name: undefined,
+        target_type: 'post',
+        target_id: 9,
+        target_title: '你的内容因「垃圾广告」被举报，已删除',
+      }),
+    ])
+    expect(wrapper.text()).toContain('你的内容因「垃圾广告」被举报，已删除')
+  })
+
   it('点击单条：跳转用户主页 + 标记已读 + 红点消失', async () => {
     const wrapper = await mountWith([followNotif()])
     await wrapper.find('.item').trigger('click')

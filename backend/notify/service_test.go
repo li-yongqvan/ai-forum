@@ -44,6 +44,27 @@ func TestCreateNotificationInvalidType(t *testing.T) {
 	}
 }
 
+// #53：report_handled（被举报人视角）是合法类型，可落一行快照。
+func TestCreateNotificationReportHandled(t *testing.T) {
+	f := newFakeRepo()
+	svc := NewService(f)
+	title := "你的内容因「垃圾广告」被举报，已删除"
+	targetID := int64(9)
+	if err := svc.CreateNotification(context.Background(), CreateNotificationCmd{
+		RecipientID: 100, Type: "report_handled",
+		TargetType: strPtr("post"), TargetID: &targetID, TargetTitle: &title,
+	}); err != nil {
+		t.Fatalf("report_handled CreateNotification err = %v", err)
+	}
+	if len(f.notifications) != 1 {
+		t.Fatalf("通知数 = %d, want 1", len(f.notifications))
+	}
+	n := f.notifications[1]
+	if n.RecipientID != 100 || n.Type != "report_handled" || n.TargetTitle == nil || *n.TargetTitle != title {
+		t.Errorf("快照行 = %+v", n)
+	}
+}
+
 func TestListNotificationsPaginationAndScope(t *testing.T) {
 	f := newFakeRepo()
 	svc := NewService(f)

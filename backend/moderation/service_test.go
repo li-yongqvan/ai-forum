@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func ctx() context.Context { return context.Background() }
@@ -147,9 +148,10 @@ func TestHandleReportDismiss(t *testing.T) {
 	if len(repo.actions) != 0 {
 		t.Errorf("dismiss 不应落审计, got %d", len(repo.actions))
 	}
-	// IA §5.6「所有动作→通知举报人」：dismiss 也发结论通知（含 dismiss 结论句）
-	if len(notify.calls) != 1 || notify.calls[0].RecipientID != 101 || notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "未采取处理" {
-		t.Errorf("dismiss 应发结论通知, got %+v", notify.calls)
+	// IA §5.6「所有动作→通知举报人」：dismiss 也发结论通知（含 dismiss 结论句）；#53 D2 dismiss 不通知被举报人
+	if len(notify.calls) != 1 || notify.calls[0].RecipientID != 101 || notify.calls[0].Type != "report_result" ||
+		notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "未采取处理" {
+		t.Errorf("dismiss 应发 1 条 report_result 结论通知, got %+v", notify.calls)
 	}
 }
 
@@ -172,10 +174,16 @@ func TestHandleReportDeletePost(t *testing.T) {
 	if len(repo.actions) != 1 || repo.actions[0].Action != ActionDeletePost || repo.actions[0].TargetType != "post" || repo.actions[0].TargetID != 1 {
 		t.Errorf("审计 = %+v", repo.actions)
 	}
-	// 通知举报人（结论句）
-	if len(notify.calls) != 1 || notify.calls[0].RecipientID != 101 || notify.calls[0].Type != "report_result" ||
-		notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "内容已删除" {
-		t.Errorf("通知 = %+v", notify.calls)
+	// 通知：举报人 report_result（结论句）+ 被举报人 report_handled（作者视角，含原因，#53 D1/D2）
+	if len(notify.calls) != 2 {
+		t.Fatalf("delete_post 应发 2 条通知, got %+v", notify.calls)
+	}
+	c0, c1 := notify.calls[0], notify.calls[1]
+	if c0.RecipientID != 101 || c0.Type != "report_result" || c0.TargetTitle == nil || *c0.TargetTitle != "内容已删除" {
+		t.Errorf("举报人通知 = %+v", c0)
+	}
+	if c1.RecipientID != 100 || c1.Type != "report_handled" || c1.TargetTitle == nil || *c1.TargetTitle != "你的内容因「垃圾广告」被举报，已删除" {
+		t.Errorf("被举报人通知 = %+v", c1)
 	}
 }
 
@@ -190,8 +198,128 @@ func TestHandleReportWarnAttribsAuthor(t *testing.T) {
 	if len(repo.actions) != 1 || repo.actions[0].Action != ActionWarn || repo.actions[0].TargetType != "user" || repo.actions[0].TargetID != 100 {
 		t.Errorf("warn 审计 = %+v", repo.actions)
 	}
-	if len(notify.calls) != 1 || notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "已警告违规用户" {
-		t.Errorf("warn 通知 = %+v", notify.calls)
+	// 通知：举报人 report_result + 被举报人 report_handled（#53 D2，warn 也通知，反转 O4）
+	if len(notify.calls) != 2 {
+		t.Fatalf("warn 应发 2 条通知, got %+v", notify.calls)
+	}
+	if notify.calls[0].RecipientID != 101 || notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "已警告违规用户" {
+		t.Errorf("举报人通知 = %+v", notify.calls[0])
+	}
+	c1 := notify.calls[1]
+	if c1.RecipientID != 100 || c1.Type != "report_handled" || c1.TargetTitle == nil || *c1.TargetTitle != "你因「垃圾广告」被举报，已警告" {
+		t.Errorf("被举报人通知 = %+v", c1)
+	}
+}
+
+func TestHandleReportDeleteCommentNotifiesAuthor(t *testing.T) {
+	repo := newFakeRepo()
+	content := newFakeContent()
+	users := newFakeUsers()
+	notify := newFakeNotifier()
+	svc := NewService(repo, content, users, notify)
+	users.add(100, "alice")
+	users.add(101, "bob")
+	content.addRef("comment", 2, TargetRef{AuthorID: 100, Title: "一条评论"})
+
+	id, err := svc.CreateReport(ctx(), CreateReportCmd{ReporterID: 101, TargetType: "comment", TargetID: 2, Reason: "垃圾广告"})
+	if err != nil {
+		t.Fatalf("CreateReport = %v", err)
+	}
+	if err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: id, HandlerID: 102, OperatorRole: "moderator", Action: ActionDeleteComment}); err != nil {
+		t.Fatalf("delete_comment = %v", err)
+	}
+	if len(notify.calls) != 2 {
+		t.Fatalf("delete_comment 应发 2 条通知, got %+v", notify.calls)
+	}
+	c1 := notify.calls[1]
+	if c1.RecipientID != 100 || c1.Type != "report_handled" || c1.TargetTitle == nil || *c1.TargetTitle != "你的内容因「垃圾广告」被举报，已删除" {
+		t.Errorf("被举报人通知 = %+v", c1)
+	}
+}
+
+func TestHandleReportWarnUserTargetNotifiesUser(t *testing.T) {
+	repo := newFakeRepo()
+	content := newFakeContent()
+	users := newFakeUsers()
+	notify := newFakeNotifier()
+	svc := NewService(repo, content, users, notify)
+	users.add(100, "alice")
+	users.add(101, "bob")
+	users.add(102, "mod")
+	// user 目标的 ResolveTarget 直接回显 targetID（与 adapter 一致），fake 需预置该 ref
+	content.addRef("user", 100, TargetRef{AuthorID: 100, Title: ""})
+
+	id, err := svc.CreateReport(ctx(), CreateReportCmd{ReporterID: 101, TargetType: "user", TargetID: 100, Reason: "人身攻击"})
+	if err != nil {
+		t.Fatalf("CreateReport = %v", err)
+	}
+	if err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: id, HandlerID: 102, OperatorRole: "moderator", Action: ActionWarn}); err != nil {
+		t.Fatalf("warn = %v", err)
+	}
+	if len(notify.calls) != 2 {
+		t.Fatalf("warn user 目标应发 2 条通知, got %+v", notify.calls)
+	}
+	c1 := notify.calls[1]
+	if c1.RecipientID != 100 || c1.Type != "report_handled" || c1.TargetTitle == nil || *c1.TargetTitle != "你因「人身攻击」被举报，已警告" {
+		t.Errorf("被举报人通知 = %+v", c1)
+	}
+}
+
+func TestHandleReportLegacyNilTargetAuthor(t *testing.T) {
+	_, repo, content, _, notify, rep := newSvc(t)
+	svc := NewService(repo, content, newFakeUsers(), notify)
+	// 模拟 0007 之前建的存量举报：无 target_author_id 快照
+	repo.reports[rep.ID].TargetAuthorID = nil
+
+	if err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: rep.ID, HandlerID: 102, OperatorRole: "moderator", Action: ActionDeletePost, Note: "违规删除"}); err != nil {
+		t.Fatalf("delete_post = %v", err)
+	}
+	// 存量无快照 → 只发举报人通知，跳过被举报人（slog.Warn），不 panic
+	if len(notify.calls) != 1 || notify.calls[0].Type != "report_result" || notify.calls[0].RecipientID != 101 {
+		t.Errorf("存量无快照应只发 1 条举报人通知, got %+v", notify.calls)
+	}
+}
+
+func TestCreateReportRateLimit(t *testing.T) {
+	repo := newFakeRepo()
+	content := newFakeContent()
+	users := newFakeUsers()
+	notify := newFakeNotifier()
+	svc := NewService(repo, content, users, notify)
+	users.add(100, "alice")
+	users.add(101, "bob")
+	for i := int64(1); i <= 6; i++ {
+		content.addRef("post", i, TargetRef{AuthorID: 100, Title: "帖"})
+	}
+	create := func(targetID int64) error {
+		_, err := svc.CreateReport(ctx(), CreateReportCmd{ReporterID: 101, TargetType: "post", TargetID: targetID, Reason: "垃圾广告"})
+		return err
+	}
+
+	// 前 5 次成功（不同目标避开 fake 的 pending 去重）
+	for i := int64(1); i <= reportLimit; i++ {
+		if err := create(i); err != nil {
+			t.Fatalf("第 %d 次 = %v, want 成功", i, err)
+		}
+	}
+	// 第 6 次 → ErrRateLimited，且不落库
+	if err := create(6); !errors.Is(err, ErrRateLimited) {
+		t.Errorf("第 %d 次 = %v, want ErrRateLimited", reportLimit+1, err)
+	}
+	if len(repo.reports) != reportLimit {
+		t.Errorf("落库条数 = %d, want %d（超限不落库）", len(repo.reports), reportLimit)
+	}
+
+	// 窗口过期：把已有举报 CreatedAt 改到窗口外 → 可再举报（含 dismissed 也计入，MVP 精度）
+	now := time.Now()
+	for _, r := range repo.reports {
+		r.CreatedAt = now.Add(-reportWindow - time.Minute)
+	}
+	if err := create(6); err != nil {
+		t.Errorf("窗口外重报 = %v, want 成功", err)
+	}
+	if len(repo.reports) != reportLimit+1 {
+		t.Errorf("窗口外应落第 6 条, got %d 条", len(repo.reports))
 	}
 }
 

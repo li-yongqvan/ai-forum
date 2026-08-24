@@ -122,6 +122,19 @@ func (f *fakeRepo) PendingExists(ctx context.Context, reporterID int64, targetTy
 	return false, nil
 }
 
+// CountReportsSince 频控窗口计数：同举报人 since 之后所有举报（跨目标、含 dismissed，与 gorm 实现一致，#53）。
+func (f *fakeRepo) CountReportsSince(ctx context.Context, reporterID int64, since time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for _, r := range f.reports {
+		if r.ReporterID == reporterID && !r.CreatedAt.Before(since) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeRepo) AppendAction(ctx context.Context, a *ModerationAction) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
