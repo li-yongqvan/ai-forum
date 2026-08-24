@@ -40,7 +40,8 @@ if [ ! -f .env ]; then
   done
 fi
 
-# 4. 拉起（v3.1：仅 api 走 GHCR 可达源；nginx/postgres 已预灌本地，见执行清单）
-docker compose pull api
+# 4. 拉起（v3.2：服务器本地构建 api——proxy.golang.org 被墙，go mod 走 goproxy.cn；nginx/postgres 已预灌本地）
+#    前置：golang:1.26-alpine + alpine:3.21 + docker/dockerfile:1 已预灌（见执行清单）
+docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api
 docker compose up -d
 docker compose ps

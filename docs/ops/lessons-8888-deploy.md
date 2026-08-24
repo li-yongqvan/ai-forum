@@ -79,3 +79,13 @@ curl -s -H "Authorization: Bearer $TOK" https://ghcr.io/v2/li-yongqvan/ai-forum-
 export MSYS_NO_PATHCONV=1
 docker run --rm -v "C:/Users/liyongquan/ai-forum/backend:/repo" -w /repo golangci/golangci-lint:v2.12.2 golangci-lint config verify
 ```
+
+## 4. #43 服务器本地构建（2026-08-24 新增坑位）
+
+1. **proxy.golang.org 服务器不可达（实测超时）** → `go mod download` 必失败。对策：Dockerfile `ARG GOPROXY` + 服务器 build `--build-arg GOPROXY=https://goproxy.cn,direct`（实测 200/0.06s）。CI（runner）可访问默认 proxy.golang.org，默认不覆盖。
+2. **服务器无 golang/alpine builder 镜像（Docker Hub 被墙）** → merge 前一次性预灌 `golang:1.26-alpine` + `alpine:3.21` + `docker/dockerfile:1`（BuildKit frontend，Dockerfile:1 `# syntax=` 需要）。本机（中国）可能也拉不到 Docker Hub，走镜像源 `docker pull m.daocloud.io/docker.io/library/golang:1.26-alpine` 再 retag。
+3. **前端换装 bind-mount inode 坑** → web 容器挂 `frontend/dist` 的 inode，`rm -rf dist && mv` 换目录后容器仍挂旧 inode、新文件永不生效。对策：`find dist -mindepth 1 -delete`（清内容保目录）+ staging `cp -a` 原地铺新（`deploy/deploy-server.sh`）。**换装非原子**：`find -delete` + `cp -a` 中途失败会留半换装 dist（部分 chunk 404 至下个发版），MVP 接受（与 scp 只增不删同源，#14 取舍）。
+4. **`set -e` 下 `cmd && break` 误杀** → 健康轮询循环里 `[ "$st" = healthy ] && break` 在非 healthy 时返回非零 → set -e 整脚本退出。对策：if/fi + `|| echo none` 兜底。
+5. **`docker compose exec` 无 TTY** → 脚本/CI 非交互上下文统一 `-T`（appleboy/ssh-action 分配 PTY 时现版不带 -T 也能跑，但 -T 两边都安全）。
+6. **compose 加 `build:` 段后 `pull api` 语义变** → 拉 GHCR 过期 `:latest`；裸 `up -d` 缺镜像时用默认 GOPROXY 构建失败。对策：bootstrap/部署显式 `docker compose build --build-arg ...`。
+7. **回退保险 tag 时机** → `docker tag :latest :rollback` 必须在 build **之前**（build 成功覆盖 :latest 后旧镜像变 dangling 被 prune，无回退源）。
