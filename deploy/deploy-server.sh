@@ -27,15 +27,10 @@ fi
 # 2. 服务器本地构建（goproxy.cn；失败 set -e 中止，旧容器照跑）
 docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api
 
-# 3. 拉起 + 健康轮询（⚠️ set -e 下禁用 `cmd && break`，必须 if/fi；inspect 失败 || echo none 兜底）
+# 3. 拉起 + 健康轮询（复用 deploy/wait-healthy.sh；unhealthy/超时 → 回退旧镜像）
 docker compose up -d --force-recreate api
 ok=0
-for i in $(seq 1 30); do
-  st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' ai-forum-api 2>/dev/null || echo none)
-  if [ "$st" = healthy ]; then ok=1; break; fi
-  if [ "$st" = unhealthy ]; then break; fi
-  sleep 2
-done
+if bash deploy/wait-healthy.sh ai-forum-api 60; then ok=1; fi
 if [ "$ok" -ne 1 ]; then
   # 回退旧镜像（旧镜像之前一直 healthy，理应恢复）；回退后再轮询 ≤30s（F2①：旧镜像也挂=更深层问题，值得报警）
   # guard：:rollback 仅在 :latest 存在时创建（见上），消费前也需 inspect 守卫——防 set -e 下 tag 失败硬中断
@@ -43,12 +38,7 @@ if [ "$ok" -ne 1 ]; then
     docker tag "$IMG:rollback" "$IMG:latest"
     docker compose up -d --force-recreate api
     ok=0
-    for i in $(seq 1 15); do
-      st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' ai-forum-api 2>/dev/null || echo none)
-      if [ "$st" = healthy ]; then ok=1; break; fi
-      if [ "$st" = unhealthy ]; then echo "FATAL: api unhealthy after rollback" >&2; exit 1; fi
-      sleep 2
-    done
+    if bash deploy/wait-healthy.sh ai-forum-api 30; then ok=1; fi
   else
     echo "WARN: no $IMG:rollback available to roll back to（api may be unhealthy）" >&2
   fi
