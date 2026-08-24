@@ -79,3 +79,14 @@
 - [x] 后端：迁移 0006 + content 只读方法（S4）+ moderation 域（service/gorm_repo/handler/httpapi 装配）+ 单测/集成测试全绿
 - [ ] 前端：api/report.ts + ReportSheet + PostList/PostDetail/CommentTree 接线 + Reports 队列页 + 路由 + Me 入口徽章 + vitest
 - [ ] 自审 `/code-review` → PR（基 main）→ 用户授权合并 → CI 部署 → 服务器验证 → **回报统筹方更新地图 #1（本会话不自行 edit issue #1）**
+
+---
+
+## 6. 修订注记（#53，2026-08-24）
+
+> **本文件 D2（§1）与 O4（§3.3）被 issue #53 反转**，以 #53 设计文档为准：
+> `docs/plans/issue-53-report-followup-设计文档.md`（评审：有条件通过 0 阻塞，意见书同目录）。
+>
+> - **D2「report_result 只发举报人」→ 反转**：#53 D1 改为**举报人 + 被举报人都发**（被举报人收 `report_handled`，仅 delete_post/delete_comment/warn）。
+> - **O4「warn 仅留痕、对方不会收到通知」→ 反转**：#53 D2 中 **warn 也通知被举报人**；前端 `Reports.vue` 警告按钮文案同步改为「警告（会通知被举报人）」。
+> - 其余 D1/D3-D6 与 §4 缺口清单不变（举报频控作为 #53 新决策补入，见 #53 设计文档 §3 D3/D4）。

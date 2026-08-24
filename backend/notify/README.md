@@ -24,7 +24,7 @@
 | 哨兵错误 | 语义 | 建议 HTTP |
 |---|---|---|
 | `ErrNotFound` | 通知/私信不存在或不属于该用户 | 404 |
-| `ErrInvalidType` | `Type` 不在 5 类白名单（follow/like/comment/reply/report_result） | 400 |
+| `ErrInvalidType` | `Type` 不在 6 类白名单（follow/like/comment/reply/report_result/report_handled） | 400 |
 
 > 其余 error 为基础设施故障，调用方按 500 处理。**当前生成点为同步 best-effort**：调用方在成功动作后同步写通知、吞错不回滚主流程（如 follow 成功后通知失败不影响关注结果）；future 若积压可改进程内 goroutine 异步（#8：无 Redis，进程内）。
 

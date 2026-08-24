@@ -1,11 +1,11 @@
 # Package moderation — 治理域深模块接口（Interface README）
 
 > 依据：#4 服务候选边界、#5 D6（治理最小模型）、#7 深模块规范、IA v2 §5.6 治理闭环。
-> **状态：#33 已实现。** service + gorm_repo + httpapi 路由已落地（2026-08-21）。
+> **状态：#33/#53 已实现。** service + gorm_repo + httpapi 路由已落地（2026-08-24）。
 
 ## 范围
 
-对外提供 `Service` 接口：`CreateReport` / `HandleReport` / `ListReports` / `CountReports` / `RecordAction`。治理闭环：举报（帖子/评论/用户）→ 处理（`/reports` 最小闭环）→ append 审计 → `report_result` 通知（只发举报人，#33 D2）。**#34 直接治理动作（ban/unban）经 `RecordAction` 独立追加审计**（不经过举报流程）。
+对外提供 `Service` 接口：`CreateReport` / `HandleReport` / `ListReports` / `CountReports` / `RecordAction`。治理闭环：举报（帖子/评论/用户）→ 处理（`/reports` 最小闭环）→ append 审计 → 双通知（`report_result` 给举报人 + `report_handled` 给被举报人，仅 delete/warn，#53）。**#34 直接治理动作（ban/unban）经 `RecordAction` 独立追加审计**（不经过举报流程）。
 
 本包**不 import content/user/notify**，跨包能力经 seam 注入：`ContentGateway`（`ResolveTarget`/`DeletePost`/`DeleteComment`）、`UserGateway`（`GetUserView`）、`Notifier`（`CreateNotification`）——组合根（httpapi）装配 adapter（S1）。
 
@@ -18,11 +18,13 @@
 - 状态枚举：`pending/resolved/dismissed`。
 - **`reason` 只存六枚举之一**（D4/O2），举报人备注独立入 `reporter_note` 列（迁移 0006）。
 - **并发双处理防护**：`UpdateReportStatus` 条件更新 `WHERE status='pending'`，`RowsAffected=0` → `ErrNotFound`（F4）。
+- **被举报人触达（#53）**：处理 delete_post/delete_comment/warn 后，除举报人 `report_result` 外，再发 `report_handled` 给被举报人（作者 id 来自 `reports.target_author_id` 快照，0007）；**dismiss 不通知被举报人**。存量无快照（NULL）→ 跳过 + `slog.Warn`。
+- **举报频控（#53，软限）**：`CreateReport` 时同一举报人 `reportWindow`（10 分钟）内 ≤`reportLimit`（5）次，超限 → `ErrRateLimited`（429，不落库）。窗口计数含已 dismissed 举报、count+insert 非原子（并发可少量超发）——MVP 接受，硬不变量仍是 `uq_reports_pending`。
 
 ## 调用顺序约束（Ordering）
 
 - 处理举报需先有 `CreateReport` 落库。
-- `HandleReport`（O1 序列）：**事务外**执行内容网关副作用（删除/解析作者）→ **单事务**内「append 审计 + 改状态」→ **提交后事务外**发 `report_result` 通知（失败打日志不回滚，S3）。
+- `HandleReport`（O1 序列）：**事务外**执行内容网关副作用（删除/解析作者）→ **单事务**内「append 审计 + 改状态」→ **提交后事务外**发双通知（`report_result` 举报人 + `report_handled` 被举报人，#53；各吞错打日志不回滚，S3）。
 - 删除动作不先 `ResolveTarget`：adapter 把「目标不存在/已删」映射为成功，保证崩溃窗口（已删未结）可幂等重处理（O1-②；副作用：作者先自删时审计记 `delete_post` 归属处理人，MVP 精度已文档化接受）。
 
 ## 错误模式（Errors）
@@ -32,12 +34,13 @@
 | `ErrNotFound` | 举报或目标不存在 | 404 |
 | `ErrDuplicatePending` | pending 期内重复举报 | 409 |
 | `ErrInvalidAction` | 非法处理动作/权限越界/自举报 | 400 |
+| `ErrRateLimited` | 举报频控超限（#53，10 分钟 ≤5 次） | 429 |
 
 > 其余 error 为基础设施故障，调用方按 500 处理。
 
 ## 必需配置（Required config）
 
-- `Repo` 依赖注入；schema `moderation` 已迁移（含 0006 `reporter_note` 列）。
+- `Repo` 依赖注入；schema `moderation` 已迁移（含 0006 `reporter_note`、0007 `target_author_id` 列）。
 - `ContentGateway`/`UserGateway`/`Notifier` 由组合根注入（`httpapi.NewContentGateway/NewUserGateway/NewNotifier`）。
 
 ## HTTP API 面（#33，S7 补全）

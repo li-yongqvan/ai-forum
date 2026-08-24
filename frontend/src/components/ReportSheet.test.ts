@@ -69,4 +69,14 @@ describe('ReportSheet 举报弹窗', () => {
     await flushPromises()
     expect(showToast).toHaveBeenCalledWith('你已举报过该内容，请等待处理')
   })
+
+  it('频控 429（#53）：透出「举报过于频繁」文案，不关弹窗', async () => {
+    vi.mocked(api.createReport).mockRejectedValue(new Error('举报过于频繁，请稍后再试'))
+    const wrapper = mountSheet()
+    await wrapper.findAll('.reason-item')[0].trigger('click')
+    await wrapper.find('.submit').trigger('click')
+    await flushPromises()
+    expect(showToast).toHaveBeenCalledWith('举报过于频繁，请稍后再试')
+    expect(wrapper.emitted('update:show')).toBeFalsy() // 留在弹窗
+  })
 })

@@ -33,6 +33,8 @@ func respondModerationError(c *gin.Context, err error) {
 		respondError(c, http.StatusConflict, "你已举报过该内容，请等待处理")
 	case errors.Is(err, moderation.ErrInvalidAction):
 		respondError(c, http.StatusBadRequest, "操作不合法")
+	case errors.Is(err, moderation.ErrRateLimited):
+		respondError(c, http.StatusTooManyRequests, "举报过于频繁，请稍后再试")
 	default:
 		respondError(c, http.StatusInternalServerError, "服务器内部错误")
 	}

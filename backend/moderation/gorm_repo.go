@@ -111,6 +111,18 @@ func (r *gormRepo) PendingExists(ctx context.Context, reporterID int64, targetTy
 	return n > 0, nil
 }
 
+// CountReportsSince 频控窗口计数：同举报人 since 之后所有举报（跨目标、含 dismissed，MVP 精度 #53 F6）。
+func (r *gormRepo) CountReportsSince(ctx context.Context, reporterID int64, since time.Time) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&Report{}).
+		Where("reporter_id = ? AND created_at >= ?", reporterID, since).
+		Count(&n).Error
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // AppendAction 追加审计行（append-only：仅 created_at 由 DB 默认，#5 D6）。
 func (r *gormRepo) AppendAction(ctx context.Context, a *ModerationAction) error {
 	return r.db.WithContext(ctx).Create(a).Error

@@ -120,8 +120,8 @@ export interface FollowTarget {
   target_id: number
 }
 
-// 通知中心（#32）：schema 5 类，当前仅 follow 由关注触发生成
-export type NotificationType = 'follow' | 'like' | 'comment' | 'reply' | 'report_result'
+// 通知中心（#32/#53）：6 类；report_result 举报人视角、report_handled 被举报人视角
+export type NotificationType = 'follow' | 'like' | 'comment' | 'reply' | 'report_result' | 'report_handled'
 
 export interface AppNotification {
   id: number

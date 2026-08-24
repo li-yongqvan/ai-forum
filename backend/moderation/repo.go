@@ -1,6 +1,9 @@
 package moderation
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repo 是治理域持久化内部 seam（#7）。实现见 gorm_repo.go。
 // moderation_actions 仅支持创建，不支持 update/delete（#5 D6：API 不暴露）。
@@ -12,6 +15,8 @@ type Repo interface {
 	ListReports(ctx context.Context, status string, limit, offset int) ([]*Report, error)
 	CountReports(ctx context.Context, status string) (int64, error)
 	PendingExists(ctx context.Context, reporterID int64, targetType string, targetID int64) (bool, error)
+	// CountReportsSince 统计某举报人在 since 之后发起的举报数（#53 频控窗口计数，全局跨目标、不区分状态）。
+	CountReportsSince(ctx context.Context, reporterID int64, since time.Time) (int64, error)
 
 	AppendAction(ctx context.Context, a *ModerationAction) error
 

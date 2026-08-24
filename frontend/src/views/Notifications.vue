@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 通知中心（#32，IA §4/§5.4：通知/私信分段；未读红点 + 全部已读；点击单条跳锚点）
-// 当前仅 follow 通知（关注用户 → 被关注者）；like/comment/reply/report_result 类型预留给后续。
+// 当前仅 follow 通知（关注用户 → 被关注者）；like/comment/reply/report_result/report_handled 类型预留给后续。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
@@ -69,12 +69,22 @@ function textFor(n: AppNotification): string {
       return `${who}回复了你的评论`
     case 'report_result':
       return n.target_title ? `举报结果：${n.target_title}` : '举报处理结果已更新'
+    case 'report_handled':
+      // 被举报人视角（#53）：整句文案由后端算好存进 target_title，前端原文渲染
+      return n.target_title || '你的内容已被处理'
     default:
       return '新通知'
   }
 }
 
-// 跳转锚点（IA v2 §4）：follow→用户主页；like/comment/reply→帖子详情；report_result→提示
+// 头像（#53 Q4）：report_* 通知无 actor，用中性「管」替代「?」——「?」读作「数据缺失」而非「系统通知」
+function avatarFor(n: AppNotification): string {
+  if (n.actor_name) return n.actor_name
+  if (n.type === 'report_result' || n.type === 'report_handled') return '管'
+  return '?'
+}
+
+// 跳转锚点（IA v2 §4）：follow→用户主页；like/comment/reply→帖子详情；report_result/report_handled→提示（不跳转）
 function linkTo(n: AppNotification): string | null {
   switch (n.type) {
     case 'follow': {
@@ -85,6 +95,9 @@ function linkTo(n: AppNotification): string | null {
     case 'comment':
     case 'reply':
       return n.target_id != null ? `/post/${n.target_id}` : null
+    case 'report_result':
+    case 'report_handled':
+      return null
     default:
       return null
   }
@@ -143,7 +156,7 @@ const hasUnread = computed(() => items.value.some((n) => !n.is_read))
           :class="{ unread: !n.is_read }"
           @click="onItemClick(n)"
         >
-          <Avatar :name="n.actor_name || '?'" :size="42" />
+          <Avatar :name="avatarFor(n)" :size="42" />
           <div class="body">
             <div class="text">{{ textFor(n) }}</div>
             <div class="time">{{ formatTime(n.created_at) }}</div>
