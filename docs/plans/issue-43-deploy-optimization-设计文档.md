@@ -135,7 +135,7 @@
 - 前端上传（通用）：`tar -czf frontend-dist.tar.gz -C frontend/dist .` → scp `/tmp`（门控保留）。
 - scp 模式专属（`if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'`）：buildx + docker build（`push:false, load:true`）→ save|gzip → scp `/tmp`。
 - 部署步（通用，脚本按 `${{ vars.DEPLOY_MODE }}` 分叉）：`set -euo pipefail` → `git pull --ff-only origin main` → mkdir → scp 模式则 load + up + **健康等待 ≤60s**（F3 ①决议：应急路径也不出「deploy 绿站点红」）+ reload / server 模式则 `bash deploy/deploy-server.sh /tmp/ai-forum-frontend.tar.gz`（内含同款健康门）。`command_timeout: 10m`（F6 决议）。
-- `on:` 加 `workflow_dispatch`；`command_timeout: 20m`（首次冷机构建余量）；`concurrency: group: deploy-prod` 保留。
+- `on:` 加 `workflow_dispatch`；`command_timeout: 10m`（F6 决议）；`concurrency: group: deploy-prod` 保留。
 - 依据：D1/D2/D5；SOP 门控红线（secrets 不进 if）；actionlint 逐条核对（§2.2）。
 
 ### 5.6 文档

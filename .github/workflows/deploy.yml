@@ -115,6 +115,8 @@ jobs:
           push: false
           load: true
           tags: ghcr.io/li-yongqvan/ai-forum-api:latest
+          cache-from: type=gha   # 保留 A' 的 gha 缓存（应急链路也不退化为每次冷构建）
+          cache-to: type=gha,mode=max
       - name: Save and compress API image (scp fallback mode)
         if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
         run: |
@@ -146,10 +148,9 @@ jobs:
             git pull --ff-only origin main   # 先 pull：保证新 deploy-server.sh 就位（首次）
             mkdir -p frontend/dist uploads
             if [ "${{ vars.DEPLOY_MODE }}" = "scp" ]; then
-              tar -xzf /tmp/ai-forum-frontend.tar.gz -C frontend/dist/
               docker load -i /tmp/api-image.tar.gz
               docker compose up -d --force-recreate api
-              # F3：应急路径也等健康（≤60s），不出「deploy 绿站点红」
+              # F3：应急路径也等健康（≤60s），不出「deploy 绿站点红」；健康通过后才换装前端（防「新前端+坏 api」）
               for i in $(seq 1 30); do
                 st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' ai-forum-api 2>/dev/null || echo none)
                 if [ "$st" = healthy ]; then break; fi
@@ -157,9 +158,10 @@ jobs:
                 sleep 2
               done
               [ "$st" = healthy ] || { echo "FATAL: api not healthy in 60s"; exit 1; }
+              tar -xzf /tmp/ai-forum-frontend.tar.gz -C frontend/dist/
               docker compose exec -T web nginx -t && docker compose exec -T web nginx -s reload
+              docker image prune -f
+              docker compose ps
             else
-              bash deploy/deploy-server.sh /tmp/ai-forum-frontend.tar.gz
+              bash deploy/deploy-server.sh /tmp/ai-forum-frontend.tar.gz   # 内含 prune + ps
             fi
-            docker image prune -f
-            docker compose ps

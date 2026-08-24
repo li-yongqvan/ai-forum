@@ -12,6 +12,7 @@ set -euo pipefail
 APP_DIR="$HOME/ai-forum"
 cd "$APP_DIR"
 FRONTEND_TAR="${1:-/tmp/ai-forum-frontend.tar.gz}"
+mkdir -p frontend/dist uploads   # 自愈：目录被误删时先以部署用户重建（防 docker 以 root 重建后写入失败）
 
 # 0. 前置校验：前端 tar 存在且可读（fail fast，不碰运行栈）
 [ -s "$FRONTEND_TAR" ] || { echo "FATAL: $FRONTEND_TAR missing" >&2; exit 1; }
@@ -37,14 +38,20 @@ for i in $(seq 1 30); do
 done
 if [ "$ok" -ne 1 ]; then
   # 回退旧镜像（旧镜像之前一直 healthy，理应恢复）；回退后再轮询 ≤30s（F2①：旧镜像也挂=更深层问题，值得报警）
-  docker tag "$IMG:rollback" "$IMG:latest"
-  docker compose up -d --force-recreate api
-  ok=0
-  for i in $(seq 1 15); do
-    st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' ai-forum-api 2>/dev/null || echo none)
-    if [ "$st" = healthy ]; then ok=1; break; fi
-    sleep 2
-  done
+  # guard：:rollback 仅在 :latest 存在时创建（见上），消费前也需 inspect 守卫——防 set -e 下 tag 失败硬中断
+  if docker image inspect "$IMG:rollback" >/dev/null 2>&1; then
+    docker tag "$IMG:rollback" "$IMG:latest"
+    docker compose up -d --force-recreate api
+    ok=0
+    for i in $(seq 1 15); do
+      st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' ai-forum-api 2>/dev/null || echo none)
+      if [ "$st" = healthy ]; then ok=1; break; fi
+      if [ "$st" = unhealthy ]; then echo "FATAL: api unhealthy after rollback" >&2; exit 1; fi
+      sleep 2
+    done
+  else
+    echo "WARN: no $IMG:rollback available to roll back to（api may be unhealthy）" >&2
+  fi
 fi
 [ "$ok" -eq 1 ] || { echo "FATAL: api not healthy after rollback" >&2; exit 1; }
 
