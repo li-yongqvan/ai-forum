@@ -428,7 +428,8 @@ func handledConclusionFor(action, reason string) string {
 	case ActionWarn:
 		return "你因「" + reason + "」被举报，已警告"
 	default:
-		return ""
+		// 防御：notifiesReportedUser 白名单外动作不调用本函数，但兜底不产生空标题通知（评审 Standards #1）
+		return "你的内容已被处理"
 	}
 }
 

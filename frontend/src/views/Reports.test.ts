@@ -58,7 +58,7 @@ describe('Reports 举报处理队列', () => {
     expect(wrapper.findComponent(Empty).props('title')).toBe('没有待处理的举报')
   })
 
-  it('动作集按目标类型：帖子 → 忽略/删除帖子/警告（O4 明示仅留痕）', async () => {
+  it('动作集按目标类型：帖子 → 忽略/删除帖子/警告（#53 会通知被举报人）', async () => {
     const wrapper = await mountWith([report()])
     await wrapper.find('.hbtn').trigger('click')
     const labels = wrapper.findAll('.act').map((w) => w.text())

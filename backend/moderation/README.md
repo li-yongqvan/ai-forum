@@ -1,7 +1,7 @@
 # Package moderation — 治理域深模块接口（Interface README）
 
 > 依据：#4 服务候选边界、#5 D6（治理最小模型）、#7 深模块规范、IA v2 §5.6 治理闭环。
-> **状态：#33/#53 已实现。** service + gorm_repo + httpapi 路由已落地（2026-08-21）。
+> **状态：#33/#53 已实现。** service + gorm_repo + httpapi 路由已落地（2026-08-24）。
 
 ## 范围
 
@@ -40,7 +40,7 @@
 
 ## 必需配置（Required config）
 
-- `Repo` 依赖注入；schema `moderation` 已迁移（含 0006 `reporter_note` 列）。
+- `Repo` 依赖注入；schema `moderation` 已迁移（含 0006 `reporter_note`、0007 `target_author_id` 列）。
 - `ContentGateway`/`UserGateway`/`Notifier` 由组合根注入（`httpapi.NewContentGateway/NewUserGateway/NewNotifier`）。
 
 ## HTTP API 面（#33，S7 补全）
