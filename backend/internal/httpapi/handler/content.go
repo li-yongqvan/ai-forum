@@ -117,6 +117,12 @@ func (h *ContentHandler) ListPosts(c *gin.Context) {
 			q.TopicID = &id
 		}
 	}
+	if v := c.Query("tag"); v != "" {
+		// #54 标签过滤：归一化小写；空/空白则忽略（不过滤，评审 F5）
+		if t := content.NormalizeTag(v); t != "" {
+			q.Tag = &t
+		}
+	}
 	views, err := h.svc.ListFeed(c.Request.Context(), q)
 	if err != nil {
 		respondContentError(c, err)

@@ -3,8 +3,10 @@ package content
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // gormRepo 是 Repo 的 GORM 实现（实现细节，深模块内隐藏）。
@@ -92,6 +94,10 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 	if in.TopicID != nil {
 		q = q.Where("topic_id = ?", *in.TopicID)
 	}
+	if in.Tag != nil {
+		// #54 标签过滤：子查询（主查询无 JOIN → 无列遮蔽；软删帖由主查询 deleted_at IS NULL scope 自动排除）
+		q = q.Where("id IN (SELECT pt.post_id FROM content.post_tags pt JOIN content.tags t ON t.id = pt.tag_id WHERE t.name = ?)", *in.Tag)
+	}
 	if in.Feed == "follow" {
 		// 关注来源聚合：作者/板块/话题任一命中；空集合 → IN (NULL) → 恒 false，正确返回空
 		q = q.Where("author_id IN ? OR board_id IN ? OR topic_id IN ?",
@@ -112,7 +118,13 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 }
 
 func (r *gormRepo) DeletePost(ctx context.Context, id int64) error {
-	return r.db.WithContext(ctx).Delete(&Post{}, id).Error // 软删
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&Post{}, id).Error; err != nil { // 软删
+			return err
+		}
+		// 顺带硬删该帖 post_tags（软删不触发 FK CASCADE，#54 卫生）
+		return tx.Where("post_id = ?", id).Delete(&PostTag{}).Error
+	})
 }
 
 func (r *gormRepo) CountPostsByAuthor(ctx context.Context, authorID int64) (int, error) {
@@ -401,6 +413,66 @@ func (r *gormRepo) ListFollowedTopics(ctx context.Context, followerID int64, off
 		return nil, err
 	}
 	return topics, nil
+}
+
+// ---- 标签（#54） ----
+
+// ReplacePostTags 事务内替换帖子标签关联：删旧关联 → upsert 标签（ON CONFLICT DO NOTHING，并发安全）→ 批量写关联。
+func (r *gormRepo) ReplacePostTags(ctx context.Context, postID int64, tagNames []string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("post_id = ?", postID).Delete(&PostTag{}).Error; err != nil {
+			return err
+		}
+		if len(tagNames) == 0 {
+			return nil
+		}
+		// 稳定锁序：按标签名排序 upsert（降低多标签并发插入的死锁窗口 F8）；post_tags 仍按原解析顺序写
+		sorted := append([]string(nil), tagNames...)
+		sort.Strings(sorted)
+		idByName := make(map[string]int64, len(sorted))
+		for _, name := range sorted {
+			t := Tag{Name: name}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&t).Error; err != nil {
+				return err
+			}
+			var existing Tag
+			if err := tx.Where("name = ?", name).First(&existing).Error; err != nil {
+				return err
+			}
+			idByName[name] = existing.ID
+		}
+		pts := make([]PostTag, 0, len(tagNames))
+		for _, name := range tagNames {
+			pts = append(pts, PostTag{TagID: idByName[name], PostID: postID})
+		}
+		return tx.Create(&pts).Error
+	})
+}
+
+// ListTagsByPostIDs 批量取多帖标签（读模型富化，#54）。顺序 = post_tags.id 升序（正文首次出现序）。
+func (r *gormRepo) ListTagsByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]string, error) {
+	if len(postIDs) == 0 {
+		return map[int64][]string{}, nil
+	}
+	type tagRow struct {
+		PostID int64
+		Name   string
+	}
+	var rows []tagRow
+	if err := r.db.WithContext(ctx).
+		Table("content.post_tags").
+		Select("content.post_tags.post_id, content.tags.name").
+		Joins("JOIN content.tags ON content.tags.id = content.post_tags.tag_id").
+		Where("content.post_tags.post_id IN ?", postIDs).
+		Order("content.post_tags.id ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int64][]string, len(rows))
+	for _, row := range rows {
+		out[row.PostID] = append(out[row.PostID], row.Name)
+	}
+	return out, nil
 }
 
 // ---- 辅助 ----

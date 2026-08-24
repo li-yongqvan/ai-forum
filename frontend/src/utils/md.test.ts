@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { md, plainText, isSafeUrl } from './md'
+import { md, plainText, isSafeUrl, extractTags } from './md'
 
 describe('md 渲染（IA §5.2 子集）', () => {
   it('围栏代码块', () => {
@@ -72,5 +72,52 @@ describe('md 图片渲染（#50：content-img class 挂钩预览）', () => {
     const out = md('https://a.com/1.png\n\nhttps://a.com/2.png')
     expect(out).toContain('class="content-img"')
     expect((out.match(/<img/g) ?? []).length).toBe(2)
+  })
+})
+
+describe('extractTags（#54，与 backend/content/tags_test.go 同组用例钉行为——评审 F1/Q3）', () => {
+  it('中文/ASCII 提取 + 归一化小写', () => {
+    expect(extractTags('今天心情好 #开心')).toEqual(['开心'])
+    expect(extractTags('今天 #AI 和 #RAG')).toEqual(['ai', 'rag'])
+  })
+  it('大小写归一 + 去重保序', () => {
+    expect(extractTags('#AI 然后 #ai')).toEqual(['ai'])
+  })
+  it('C# 内联不识别（和是字母，非边界）', () => {
+    expect(extractTags('C#和#ai')).toEqual([])
+  })
+  it('引号前是边界（评审 F2 实证）', () => {
+    expect(extractTags('他说"#AI"')).toEqual(['ai'])
+  })
+  it('相邻标签只识别首个（评审 F1 甲案）', () => {
+    expect(extractTags('#a#b')).toEqual(['a'])
+  })
+  it('行内代码内不识别', () => {
+    expect(extractTags('`#code`')).toEqual([])
+  })
+  it('链接/URL 内不识别', () => {
+    expect(extractTags('[链接](https://x.com/a#frag)')).toEqual([])
+    expect(extractTags('看 https://x.com/a#ai')).toEqual([])
+  })
+})
+
+describe('md 标签渲染（#54）', () => {
+  it('#AI 渲染为可点锚点（href 归一化小写，文本保留原文）', () => {
+    expect(md('#AI')).toContain('<a class="tag" href="#/tag/ai">#AI</a>')
+  })
+  it('中文标签 href URL 编码', () => {
+    expect(md('#开心')).toContain('href="#/tag/%E5%BC%80%E5%BF%83"')
+  })
+  it('C# 不生成标签锚点', () => {
+    expect(md('C#')).not.toContain('<a class="tag"')
+  })
+  it('#a#b 只生成单锚点（评审 F1）', () => {
+    const out = md('#a#b')
+    expect((out.match(/<a class="tag"/g) ?? []).length).toBe(1)
+  })
+  it('XSS：#<script> 转义后不生成锚点', () => {
+    const out = md('#<script>')
+    expect(out).not.toContain('<a class="tag"')
+    expect(out).not.toContain('<script>')
   })
 })

@@ -17,6 +17,7 @@ const router = createRouter({
     { path: '/notifications', component: () => import('../views/Notifications.vue'), meta: { title: '通知' } },
     { path: '/reports', component: () => import('../views/Reports.vue'), meta: { title: '举报管理', requireAuth: true } },
     { path: '/settings', component: () => import('../views/Settings.vue'), meta: { title: '设置' } },
+    { path: '/tag/:name', component: () => import('../views/TagDetail.vue'), meta: { title: '标签' } },
     { path: '/', redirect: '/feed' },
     { path: '/:pathMatch(.*)*', redirect: '/feed' },
   ],

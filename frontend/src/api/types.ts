@@ -55,6 +55,7 @@ export interface Post {
   like_count: number
   comment_count: number
   favorite_count: number
+  tags?: string[] // #54 正文标签（归一化小写；无则省略）
   viewer?: PostViewer
   created_at: string
 }

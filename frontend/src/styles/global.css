@@ -114,6 +114,16 @@ button,
 .md .content-img {
   cursor: zoom-in;
 }
+/* #54 正文标签胶囊：覆盖 .md a 的虚线下划线，链接进 /tag/:name */
+.md a.tag {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border-bottom: none;
+  cursor: pointer;
+}
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

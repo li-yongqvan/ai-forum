@@ -21,6 +21,17 @@ function safeLink(url: string, text?: string): string | null {
   return `<a href="${url}" target="_blank" rel="noopener noreferrer">${t}</a>`
 }
 
+// #54 标签规则（与 backend/content/tags.go 的 tagRE 保持同步，改一侧须改另一侧——评审 F1/Q3）。
+// 字面规则（D2）：`#` + 连续中文/字母/数字/下划线 ≤30；`#` 前须为行首/空白/标点才识别。
+// JS `String.replace` 与 Go `FindAllStringSubmatch` 语义一致（原始串非重叠匹配、替换文本不参与）
+// → `#a#b` 只识别第一个；`"`/`;`/`:` 都是边界。
+const TAG_RE = /(^|[^\p{L}\p{N}_#])#([\p{L}\p{N}_]{1,30})/gu
+
+/** 标签名归一化（与后端 NormalizeTag 一致）：小写。 */
+function normalizeTag(s: string): string {
+  return s.toLowerCase()
+}
+
 export function md(src: string): string {
   let s = esc(src)
   const blocks: string[] = []
@@ -45,6 +56,11 @@ export function md(src: string): string {
   )
   // 剩余裸链接（白名单兜底；排除引号/括号防误匹配已生成 HTML）
   s = s.replace(/(https?:\/\/[^\s<")]+)/gi, (m: string) => pushBlock(safeLink(m) ?? m))
+  // 标签（#54）：行首/空白/标点后 # + 连续中文/字母/数字/下划线 ≤30，可点进聚合页
+  // （先于粗体：`**#ai**` → 占位符机制天然落到 `<strong><a>#ai</a></strong>`）
+  s = s.replace(TAG_RE, (_m: string, lead: string, tag: string) =>
+    lead + pushBlock(`<a class="tag" href="#/tag/${encodeURIComponent(normalizeTag(tag))}">#${tag}</a>`),
+  )
   // 粗体
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   // 段落
@@ -55,6 +71,28 @@ export function md(src: string): string {
   // 还原占位
   s = s.replace(/\x00(\d+)\x00/g, (_m, i: string) => blocks[+i])
   return `<div class="md">${s}</div>`
+}
+
+/** #54 提取正文标签（归一化小写、去重、保首次出现序）；与后端 ParseTags 同规则、同组用例钉行为。 */
+export function extractTags(src: string): string[] {
+  // 与 md() 相同的剥离顺序（围栏→行内码→图→链接→裸URL），块替换为空格（空格与占位符 \x00N\x00 边界等价）
+  let s = esc(src)
+  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, ' ')
+  s = s.replace(/`([^`\n]+)`/g, ' ')
+  s = s.replace(/(https?:\/\/[^\s]+\.(?:png|jpe?g|gif|webp))/gi, ' ')
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, ' ')
+  s = s.replace(/(https?:\/\/[^\s<")]+)/gi, ' ')
+  const seen = new Set<string>()
+  const tags: string[] = []
+  s.replace(TAG_RE, (_m: string, _lead: string, tag: string) => {
+    const t = normalizeTag(tag)
+    if (!seen.has(t)) {
+      seen.add(t)
+      tags.push(t)
+    }
+    return ' '
+  })
+  return tags
 }
 
 /** 纯文本摘要（帖子卡/预览用）：去掉 markdown 语法。 */

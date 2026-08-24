@@ -3,6 +3,7 @@ package content
 import (
 	"context"
 	"errors"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type PostView struct {
 	BoardName     string    `json:"board_name"`
 	TopicID       *int64    `json:"topic_id"`
 	TopicName     *string   `json:"topic_name"`
+	Tags          []string  `json:"tags,omitempty"` // #54 正文标签（归一化小写；无则省略）
 	AuthorID      int64     `json:"author_id"`
 	AuthorName    string    `json:"author_name"`
 	AuthorAvatar  *string   `json:"author_avatar"`
@@ -113,6 +115,7 @@ type ListFeedQuery struct {
 	AuthorID *int64 // 按作者过滤（用户主页/我的帖子）
 	BoardID  *int64
 	TopicID  *int64
+	Tag      *string // #54 标签过滤（归一化小写名）
 	Page     int
 	PageSize int
 }
@@ -291,6 +294,12 @@ func (s *service) CreatePost(ctx context.Context, in CreatePostCmd) (PostView, e
 	}
 	if err := s.repo.CreatePost(ctx, p); err != nil {
 		return PostView{}, err
+	}
+	// #54 标签落库：标签为派生元数据，写失败仅记日志不阻断发帖（评审 §6.4）
+	if tags := ParseTags(in.Content); len(tags) > 0 {
+		if err := s.repo.ReplacePostTags(ctx, p.ID, tags); err != nil {
+			log.Printf("[content] 帖子 %d 标签写入失败: %v", p.ID, err)
+		}
 	}
 	return s.postView(ctx, p, in.AuthorID)
 }
@@ -505,6 +514,12 @@ func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, e
 		pageSize = 100
 	}
 	q := PostQuery{AuthorID: in.AuthorID, BoardID: in.BoardID, TopicID: in.TopicID, Offset: (page - 1) * pageSize, Limit: pageSize}
+	if in.Tag != nil {
+		// #54 标签归一化（大小写不敏感，D2）：seam 层兜底，不依赖调用方先归一化
+		if t := NormalizeTag(*in.Tag); t != "" {
+			q.Tag = &t
+		}
+	}
 
 	switch in.Tab {
 	case "", "all":
@@ -801,6 +816,11 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 			topicNames[t.ID] = t.Name
 		}
 	}
+	// #54 标签富化（best-effort，评审 F7：tags 查询失败仅缺省，不拖垮列表）
+	tagsByPost := map[int64][]string{}
+	if tm, err := s.repo.ListTagsByPostIDs(ctx, postIDs); err == nil {
+		tagsByPost = tm
+	}
 
 	views := make([]PostView, 0, len(posts))
 	for _, p := range posts {
@@ -821,6 +841,7 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 			FavoriteCount: favCnt[p.ID],
 			CreatedAt:     p.CreatedAt,
 		}
+		view.Tags = tagsByPost[p.ID]
 		if p.TopicID != nil {
 			if n, ok := topicNames[*p.TopicID]; ok {
 				view.TopicName = &n

@@ -21,6 +21,11 @@ type fakeRepo struct {
 	followsB map[[2]int64]time.Time
 	followsT map[[2]int64]time.Time
 
+	// #54 标签：name→id + postID→有序标签名；errReplaceTags 供标签写失败用例
+	tags           map[string]int64
+	tagPosts       map[int64][]string
+	errReplaceTags error
+
 	// 单调递增关系时钟：关注/收藏时间严格递增，排序断言确定性成立（评审 §七.3）。
 	followClock time.Time
 
@@ -28,6 +33,7 @@ type fakeRepo struct {
 	nextCommentID int64
 	nextLikeID    int64
 	nextFavID     int64
+	nextTagID     int64
 }
 
 func newFakeRepo() *fakeRepo {
@@ -40,8 +46,10 @@ func newFakeRepo() *fakeRepo {
 		favs:        map[string]*Favorite{},
 		followsB:    map[[2]int64]time.Time{},
 		followsT:    map[[2]int64]time.Time{},
+		tags:        map[string]int64{},
+		tagPosts:    map[int64][]string{},
 		followClock: time.Now(),
-		nextPostID:  1, nextCommentID: 1, nextLikeID: 1, nextFavID: 1,
+		nextPostID:  1, nextCommentID: 1, nextLikeID: 1, nextFavID: 1, nextTagID: 1,
 	}
 }
 
@@ -157,6 +165,9 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		if in.TopicID != nil && (p.TopicID == nil || *p.TopicID != *in.TopicID) {
 			continue
 		}
+		if in.Tag != nil && !stringContains(f.tagPosts[p.ID], *in.Tag) {
+			continue
+		}
 		if in.Feed == "follow" {
 			inUsers := contains(in.FollowedUserIDs, p.AuthorID)
 			inBoards := contains(in.FollowedBoardIDs, p.BoardID)
@@ -190,6 +201,7 @@ func (f *fakeRepo) DeletePost(ctx context.Context, id int64) error {
 		return errNotFound
 	}
 	p.DeletedAt = gorm.DeletedAt{Valid: true, Time: time.Now()}
+	delete(f.tagPosts, id) // #54 卫生：删帖清关联
 	return nil
 }
 
@@ -522,6 +534,57 @@ func (f *fakeRepo) ListFollowedTopics(ctx context.Context, followerID int64, off
 	return out, nil
 }
 
+// ---- 标签（#54，fake 实现） ----
+
+func (f *fakeRepo) ReplacePostTags(ctx context.Context, postID int64, tagNames []string) error {
+	if f.errReplaceTags != nil {
+		return f.errReplaceTags
+	}
+	// 去重保序（与 ParseTags 语义一致，防御性）
+	seen := make(map[string]bool)
+	names := make([]string, 0, len(tagNames))
+	for _, n := range tagNames {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+	f.tagPosts[postID] = names
+	for _, n := range names {
+		if _, ok := f.tags[n]; !ok {
+			f.tags[n] = f.nextTagID
+			f.nextTagID++
+		}
+	}
+	return nil
+}
+
+func (f *fakeRepo) ListTagsByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]string, error) {
+	out := make(map[int64][]string, len(postIDs))
+	for _, pid := range postIDs {
+		if tags, ok := f.tagPosts[pid]; ok {
+			out[pid] = append([]string(nil), tags...)
+		}
+	}
+	return out, nil
+}
+
+// seedPostTags 预置帖子标签（ListFeedByTag 等测试用），归一化小写。
+func (f *fakeRepo) seedPostTags(postID int64, tags ...string) {
+	names := make([]string, 0, len(tags))
+	for _, n := range tags {
+		names = append(names, NormalizeTag(n))
+	}
+	f.tagPosts[postID] = names
+	for _, n := range names {
+		if _, ok := f.tags[n]; !ok {
+			f.tags[n] = f.nextTagID
+			f.nextTagID++
+		}
+	}
+}
+
 // slicePage 应用 offset/limit 分页（与 fake ListPosts 的内联分页语义一致）。
 func slicePage[T any](items []T, offset, limit int) []T {
 	start := offset
@@ -540,6 +603,15 @@ func slicePage[T any](items []T, offset, limit int) []T {
 func contains(ids []int64, id int64) bool {
 	for _, v := range ids {
 		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+func stringContains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
 			return true
 		}
 	}

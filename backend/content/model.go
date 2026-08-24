@@ -85,6 +85,25 @@ type Favorite struct {
 
 func (Favorite) TableName() string { return "content.favorites" }
 
+// Tag 标签（#54）：name 为归一化小写（大小写不敏感，D2），UNIQUE。写一次、无软删。
+type Tag struct {
+	ID        int64 `gorm:"primaryKey"`
+	Name      string
+	CreatedAt time.Time
+}
+
+func (Tag) TableName() string { return "content.tags" }
+
+// PostTag 帖子-标签关联（#54）：解析顺序 = id 升序（读模型保首次出现序）。无软删。
+type PostTag struct {
+	ID        int64 `gorm:"primaryKey"`
+	TagID     int64
+	PostID    int64
+	CreatedAt time.Time
+}
+
+func (PostTag) TableName() string { return "content.post_tags" }
+
 type FollowBoard struct {
 	ID         int64 `gorm:"primaryKey"`
 	FollowerID int64 // 逻辑FK → user.users
