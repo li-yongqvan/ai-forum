@@ -27,6 +27,10 @@ services:
         max-file: "3"
 
   api:
+    # #43 服务器本地构建（v3.2）：build 段供 `docker compose build api` 构建并打 image tag；
+    #   GOPROXY/GOSUMDB 由部署脚本 `--build-arg` 显式传（proxy.golang.org 服务器被墙 → goproxy.cn），不硬编码
+    build:
+      context: ./backend
     image: ghcr.io/li-yongqvan/ai-forum-api:latest
     container_name: ai-forum-api
     restart: unless-stopped

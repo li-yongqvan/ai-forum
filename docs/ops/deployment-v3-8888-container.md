@@ -21,6 +21,19 @@
 | uploads 写权限 | docker 一次性 chown（需 alpine:3） | **换 compose `user:` override**（api 以部署用户 1003:1005 运行，uploads 归 liyongquan）——观感干净（不落 ubuntu 属主）+ 去掉 alpine 依赖（Docker Hub 被墙拉不到） |
 | `.env` | 无 APP_UID/GID | 新增 `APP_UID=$(id -u)` / `APP_GID=$(id -g)` |
 
+### v3.2 追加修正（#43 服务器本地构建，2026-08-24）
+
+| 项目 | v3.1 | v3.2 |
+|---|---|---|
+| **api 镜像构建** | CI 构建 → `docker save\|gzip` → scp → 服务器 `docker load`（A' 方案，deploy ~18min 物理瓶颈） | **服务器本地构建**（`git pull` + `docker compose build api`，go mod 走 goproxy.cn；deploy job ~4-5min）；CI 不再构建/推 GHCR（编译门 = test job `go build ./...`） |
+| **前端交付** | scp `frontend/dist/*` 直传（2.9MB 累积旧哈希） | **tar.gz（~300KB）→ scp /tmp → 服务器解压**（保 inode 清旧） |
+| **GOPROXY/GOSUMDB** | 无（CI 构建） | Dockerfile 加 `ARG GOPROXY/GOSUMDB` + BuildKit cache mount；服务器 `--build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn`（proxy.golang.org 被墙实测） |
+| **构建基础镜像预灌** | 仅 nginx/postgres | 追加 golang:1.26-alpine + alpine:3.21 + `docker/dockerfile:1`（builder/frontend，见 §7 执行顺序） |
+| **应急回退** | — | `DEPLOY_MODE` 仓库 variable：默认 `server`（服务器构建）/ 应急 `scp`（A' 老路：CI build+save\|gzip→scp→load+up+健康等待），改变量 + Actions Re-run 即切，无需改代码/merge |
+| **验收口径** | CI 部署步 ≤3min（未达成，跨洋 scp 物理瓶颈，#26 改连续 3 次零超时） | **deploy job ≤5min + 连续 3 次零超时**（评审 F5 决议） |
+
+> 设计评审：`docs/plans/issue-43-deploy-optimization-设计文档.md`（有条件通过，0 阻塞）+ 评审意见书同目录。
+
 ### v2 相对 v1（评审定稿，2026-08-19）
 
 | 项目 | v1 | v2 |
@@ -245,6 +258,7 @@ script: |
 - `DEPLOY_ENABLED` 为仓库 variable：服务器 bootstrap 完成后置 `true`——解决「代码合了、服务器没跟上」的 CI 红污染空窗。
 - `concurrency` 防两次 push 部署互撞。
 - 删除/更新过时注释（「已 chown /var/www/ai-forum」等）。
+- **v3.2 覆盖（#43）**：deploy job 双模式——默认 `DEPLOY_MODE=server`：前端 `npm ci+build` → `tar.gz` → scp → ssh `git pull --ff-only && bash deploy/deploy-server.sh`（服务器 `docker compose build --build-arg GOPROXY=goproxy.cn` → up → 健康轮询/回退 → 前端换装 → reload）；应急 `DEPLOY_MODE=scp`：追加 CI build+`save|gzip` → scp → 服务器 `load`+up+健康等待（A' 老路）。CI 不再推 GHCR（`permissions` 收窄 `contents: read`）。实现详见 `deploy/deploy-server.sh` 与 `docs/plans/issue-43-deploy-optimization-设计文档.md`。
 
 ## 4. 服务器 bootstrap（deploy/bootstrap.sh，进仓库）
 
@@ -296,6 +310,7 @@ docker compose ps
 ```
 
 要点：
+- **v3.2 覆盖（#43）**：仓库内 `deploy/bootstrap.sh` 已把「4. 拉起」的 `docker compose pull api` 改为 `docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api`（compose 加 `build:` 段后 `pull` 会拉 GHCR 过期镜像、裸 `up` 会因默认 GOPROXY 不可达而失败）。**前置：golang:1.26-alpine + alpine:3.21 + docker/dockerfile:1 已预灌**（见 §7 执行顺序）。
 - `DATABASE_URL` 与 `POSTGRES_USER/DB/PASSWORD` 同源生成，避免两处不一致；host 用 compose 服务名 `postgres`（`sslmode=disable` 为同机桥接网络内连接）。
 - `APP_ENV=production`：gin release 模式 + 关闭 dev 态 Go 静态 `/uploads`（否则与 §3.2 的 web 直托语义冲突）。
 - `UPLOADS_DIR=/opt/ai-forum/uploads`：与 compose 中 api 的容器内挂载路径一致（§2.2 实测）。
@@ -318,7 +333,7 @@ docker compose ps
 - **日志**：compose 已配 json-file 轮转（10m×3，main 现状 ✓，web 同配置）。
 - **健康检查**：api 已有 ✓；postgres 补 `pg_isready`；api/web 的 `depends_on` 均 `condition: service_healthy`。
 - **重启恢复**：三服务均 `restart: unless-stopped`；宿主机重启后由 dockerd 自启拉起（首次验证一次 `docker compose ps`）。
-- **磁盘卫生**：deploy 脚本尾部 `docker image prune -f`（§3.5）。
+- **磁盘卫生**：deploy 脚本尾部 `docker image prune -f`（§3.5）；v3.2 起服务器本地构建，BuildKit cache 是提速来源（`image prune -f` 不清它，属特性），**勿无脑 `builder prune`**——仅当磁盘占用 >5G 时 `docker builder prune --keep-storage 4G -f`（删 module cache 得不偿失）。
 
 ## 6. 与既有决策的关系及长期演进
 
@@ -352,6 +367,7 @@ cat ~/.ssh/ai-forum-repo.pub
 5. **GHCR package 改 Public**（GitHub 网页操作，repo 保持私有）——**必须在 bootstrap 之前**，否则 bootstrap 的 `docker compose pull` 拉私有 api 镜像报 `unauthorized`，`set -e` 直接退出。
 6. 服务器跑 `bootstrap.sh`（自检 deploy key → clone → 预建目录 → 模板生成 .env + 校验 → 首拉起）。
    - **前置：基础镜像已预灌**——在能连 Docker Hub 的机器 `docker pull nginx:1.27-alpine postgres:16-alpine`，再 `docker save nginx:1.27-alpine postgres:16-alpine | ssh liyongquan@122.51.233.225 docker load`（**2026-08-19 已执行**，服务器本地已有，见 §2.1）。
+   - **v3.2 追加前置（#43，2026-08-24）**：服务器本地构建还需预灌 `golang:1.26-alpine` + `alpine:3.21` + `docker/dockerfile:1`（builder/frontend；Docker Hub 被墙，本机若拉不到走镜像源 `docker pull m.daocloud.io/docker.io/library/golang:1.26-alpine` 再 retag）；并在 merge 前做一次**试构建**（`cd ~/ai-forum && docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api`，实测耗时/内存、确认 frontend 免拉）。
 7. `DEPLOY_ENABLED` 置 `true`，push main 做全链路验证：`http://122.51.233.225:8888/healthz` + 前端 + 发图。
 8. 配 §5 备份 cron。
 
@@ -366,7 +382,7 @@ cat ~/.ssh/ai-forum-repo.pub
 | `.env` 手写键子集 | 缺 DATABASE_URL api 启动即挂（config.go L49）；以 `.env.example` 为模板 + 校验替代 |
 | 服务器 HTTPS 匿名 clone | repo 实测私有，必失败；read-only deploy key + SSH remote 替代 |
 | GHCR 改只读 PAT | 与 Public 成本相同，多 PAT 续期负担；社团项目公开无所谓 |
-| 服务器本地构建镜像 | 私有 repo 需凭证 + 架空 CI |
+| 服务器本地构建镜像 | **v3.1 否决 → v3.2 采纳（#43）**：①私有 repo 凭证已由现有 read-only deploy key 解决（§2.2）；②「架空 CI」重估——test job `go build` 保留编译门、CI 仍做前端构建验证+门控+触发部署，未被架空；③A' 跨洋 scp ~12KB/s 已成物理瓶颈（18min）。实施见 §0 v3.2 与 `docs/plans/issue-43-deploy-optimization-设计文档.md` |
 | rootless docker | 已有 docker 组（root 等价），多此一举 |
 | Gin 直托静态/+api 对外 | 推翻 #12/#14 的 nginx 托管设计，收益不成比例 |
 | 宿主 nginx 反代 8888 | 改宿主配置需 sudo；列为长期演进（§6）而非现方案 |

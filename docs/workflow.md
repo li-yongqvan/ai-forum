@@ -153,11 +153,14 @@
 
 ## 9. 部署与验证
 
-### 9.1 CI deploy job 流程（当前）
-push main → `test`(阻塞) → `lint`(非阻塞) → `deploy`：
-前端 `npm ci && npm run build` → scp `frontend/dist/*` 到服务器 `~/ai-forum/frontend/dist`（`strip_components: 2`）→ 推 GHCR 镜像（冗余备份）→ `docker save | gzip` 出镜像包 → scp 到服务器 `/tmp` → ssh 脚本：`git pull` → `mkdir -p frontend/dist uploads` → `docker load -i /tmp/api-image.tar.gz` → `up -d --force-recreate api` → `nginx -t && nginx -s reload` → `image prune` → `compose ps`。
+### 9.1 CI deploy job 流程（当前，v3.2 服务器本地构建，#43）
+push main → `test`(阻塞) → `frontend-test`(阻塞) → `lint`(非阻塞) → `deploy`（**双模式**，`DEPLOY_MODE` 仓库 variable）：
+- **默认 `server`**：前端 `npm ci && npm run build`（构建验证）→ `tar -czf ai-forum-frontend.tar.gz`（~300KB，替代 dist/* 直传）→ scp `/tmp` → ssh 脚本 `git pull --ff-only` → `bash deploy/deploy-server.sh`——服务器 `docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api`（go mod 走 goproxy.cn；BuildKit cache mount 越部署越快）→ `up -d --force-recreate api` → **健康轮询 ≤60s + 坏镜像自动回退 rollback tag + 回退后再轮询 ≤30s** → **前端换装**（保 inode 清旧）→ `nginx -t && nginx -s reload` → `image prune` → `compose ps`。
+- **应急 `scp`**（服务器构建环境坏了 → 改 variable + Actions Re-run 即切，无需改代码/merge）：追加 CI `docker build load` → `docker save|gzip` → scp → 服务器 `load` + up + **健康等待 ≤60s**（A' 老路）。
 
-**门控**：secrets → job env → step `if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'`。**secrets 永不进 if**（job/step 皆禁，白名单：job 级 `github, needs, vars, inputs`；step 级含 `env`），本地校验 `bash scripts/check-workflows.sh`。
+**门控**：secrets → job env → step `if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'`（scp 模式专属步追加 `&& vars.DEPLOY_MODE == 'scp'`）。**secrets 永不进 if**（job/step 皆禁，白名单：job 级 `github, needs, vars, inputs`；step 级含 `env`），本地校验 `bash scripts/check-workflows.sh`。
+
+**量化验收（#43，评审 F5 决议）**：deploy job **≤5min**（现状 ~18min）+ 连续 3 次发版零超时。
 
 ### 9.2 镜像交付：CI 内 scp 镜像包（A' 方案，#26 定案）
 **问题**：服务器→GHCR 下载 ~KB/s（实测 573B/s、2.6KB/s 两档），PR#21 曾两次部署超时。原定 GHCR→阿里云 ACR，但**共享服务器无法登录其阿里云账号**（ACR 需该账号开通），故改为 A'。
@@ -170,6 +173,8 @@ push main → `test`(阻塞) → `lint`(非阻塞) → `deploy`：
 - 注意事项：CI runner（美国）→阿里云带宽可能略低于本机实测，首次部署实测确认；`appleboy/scp-action` 的 `source` 需相对 `$GITHUB_WORKSPACE`。
 
 **不选其他路径的原因**：ACR 需服务器阿里云账号（不可得）；服务器本地构建需 golang 基础镜像（Docker Hub 被墙、服务器无该镜像）；改 daemon 镜像加速需 sudo（无 sudo）。
+
+> **v3.2 覆盖（#43，2026-08-24）**：服务器本地构建已替代 A' 为主路径（deploy ~18min → ~4-5min，验收 ≤5min + 连续 3 次零超时）。「服务器本地构建需 golang 基础镜像」已由一次性预灌 golang:1.26-alpine + alpine:3.21 + `docker/dockerfile:1` 解决（见 `docs/ops/deployment-v3-8888-container.md` §7）。A' 保留为 `DEPLOY_MODE=scp` **应急回退通道**（deploy.yml 内仍含其步骤，改 variable + Re-run 即切）。A' 的核心认知不变：跨洋 scp 是物理瓶颈、GHCR 从服务器拉取 ~2.6KB/s 不可作快速通道。
 
 ### 9.3 规划项：PR 阶段功能 CI（#26 后并入）
 见 §8.5。目标：错误在合并前暴露，消掉「合并→修→再合并」返工。
@@ -213,6 +218,11 @@ curl http://122.51.233.225:8888/api/v1/posts
 | PWA 纯 HTTP 下 SW 不注册 | 已知技术债（#8 决策后果），SPA 正常 |
 | 镜像名 `li-yongquan` vs `li-yongqvan` | 用 `li-yongqvan`（qvan） |
 | 并行会话共用工作区——未提交改动跨 checkout 存活；HEAD 停在他人分支时 commit 会误落错分支 | 动手前先 `git status --porcelain`（脏就停）；会话收尾要么提交、要么把 HEAD 交还正确分支；结构性隔离用 `git worktree` |
+| 前端换装换掉 dist inode（bind mount 坑） | 换装保目录 inode：`find dist -mindepth 1 -delete` + staging `cp -a` 原地铺新，禁 `rm -rf && mv`（#43） |
+| `set -e` 下 `cmd && break` 误杀脚本 | 健康轮询等循环用 if/fi + `\|\| echo none` 兜底，勿用 `cmd && break`（#43） |
+| 脚本化 `docker compose exec` 无 TTY | 非交互上下文统一 `-T`（#43） |
+| 服务器 proxy.golang.org 被墙 | go mod 走 goproxy.cn：Dockerfile `ARG GOPROXY` + 服务器 build-arg 覆盖（#43） |
+| 服务器构建坏（builder 镜像坏/goproxy 不通） | 旧容器照跑（build 先于 up）；翻 `DEPLOY_MODE=scp` + Re-run 走 A' 应急通道（#43） |
 
 ---
 

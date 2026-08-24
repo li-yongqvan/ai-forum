@@ -1,15 +1,19 @@
-# CI/CD（#8 §5.1 + testing.md 确认项）
+# CI/CD（#8 §5.1 + testing.md 确认项 + #43 v3.2 服务器本地构建）
 # - test：go build + go test 必须通过（集成测试用 testcontainers，ubuntu-latest 自带 Docker）
 # - lint：golangci-lint 非阻塞（失败不阻断部署，仅提示）
-# - frontend-test：vitest 单测，非阻塞过渡（continue-on-error）；转正后并入 deploy needs 变阻塞
-# - deploy：前端 npm ci + build（始终，作构建验证）+ scp 上传 ~/ai-forum/frontend/dist（门控）；
-#           后端构建推送 GHCR + SSH 直连 docker compose pull && up -d；未配置 SSH secrets 或 DEPLOY_ENABLED!=true 时跳过上传/部署步，run 不红
+# - frontend-test：vitest 单测，阻塞门（#44 转正）
+# - deploy（#43 v3.2 双模式，DEPLOY_MODE 仓库 variable 切换）：
+#     server（默认）：前端 npm ci + build（构建验证）→ tar.gz → scp → ssh 跑 deploy/deploy-server.sh
+#                     服务器 git pull + docker compose build（goproxy.cn）+ up + 健康轮询/回退 + 前端换装 + reload
+#     scp（应急回退）：追加 CI 构建镜像（docker build load）→ save|gzip → scp → 服务器 load + up + 健康等待（A' 老路）
+#   未配置 SSH secrets 或 DEPLOY_ENABLED!=true 时跳过上传/部署步，run 不红
 
 name: Build and Deploy
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:   # #43：应急手动触发（配合 DEPLOY_MODE 切换，无需空 commit）
 
 jobs:
   test:
@@ -63,8 +67,7 @@ jobs:
       group: deploy-prod
       cancel-in-progress: false
     permissions:
-      contents: read
-      packages: write
+      contents: read   # #43：不再推 GHCR，去掉 packages: write
     env: # secrets 不能直接用于 if 条件（job/step 级都不行，会导致 workflow 解析失败、run 0 秒报错）
       # 先落到 job 级 env，step 的 if 用 env 上下文判断是否配置了 SSH secrets
       SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -72,7 +75,7 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
-      # 前端（#14）：始终构建，作 main 上的构建验证；上传步按 SSH secrets 门控（与 API 镜像 always-push + gated-deploy 一致）
+      # 前端（#14）：始终构建，作 main 上的构建验证；上传步按 SSH secrets 门控
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -85,35 +88,11 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push API image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          push: true
-          load: true # A'：镜像同时 load 进 runner 本地 daemon，供下一步 docker save + gzip → scp → 服务器 load（替代服务器 GHCR pull）
-          tags: |
-            ghcr.io/li-yongqvan/ai-forum-api:latest
-            ghcr.io/li-yongqvan/ai-forum-api:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Save and compress API image
-        # A'：镜像 save + gzip（~13MB），scp 直传服务器 load；服务器不再从 GHCR 拉（~2.6KB/s 曾超时）
-        # 镜像 tag 保持 ghcr.io/li-yongqvan/ai-forum-api:latest，compose.yml 无需改
-        # 注：scp-action 的 source 需相对 $GITHUB_WORKSPACE，故输出到 ./api-image.tar.gz
-        run: |
-          docker save ghcr.io/li-yongqvan/ai-forum-api:latest | gzip -1 > api-image.tar.gz
-          ls -lh api-image.tar.gz
-      - name: Upload frontend to server
-        # scp 直传容器 nginx 静态根（#8 变体：共享服务器无 sudo → ~/ai-forum/frontend/dist，web 容器挂载）
-        # strip_components: 2 去掉 frontend/dist 前缀，dist 内容直落 web root
+      - name: Package frontend tarball
+        # #43 v3.2：dist tar.gz（~300KB）替代 dist/* 直传——gzip 后跨洋 scp 更快；服务器解压（保 inode 清旧）
+        run: tar -czf ai-forum-frontend.tar.gz -C frontend/dist .
+      - name: Upload frontend tarball to server
+        # scp 直传 /tmp，解压由部署脚本做（server 模式 deploy-server.sh / scp 模式内联脚本）
         if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
         uses: appleboy/scp-action@v1.0.0
         with:
@@ -121,12 +100,28 @@ jobs:
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
           port: 2222   # 服务器 sshd 在 2222（2026-08-23 迁移；默认 22 曾致 deploy 失败）
-          source: frontend/dist/*
-          target: /home/liyongquan/ai-forum/frontend/dist
-          strip_components: 2
-      - name: Upload API image to server
-        # A'：压缩镜像包 scp 直传服务器 /tmp（走 SSH，同 frontend scp 链路）；服务器 docker load 后 compose up
-        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
+          source: ai-forum-frontend.tar.gz
+          target: /tmp
+      # ---- scp 模式（应急回退，DEPLOY_MODE=scp）：CI 构建镜像 → save|gzip → scp → 服务器 load（A' 老路）----
+      # 默认 DEPLOY_MODE=server（服务器本地构建）；服务器构建环境坏了 → 改 variable + Re-run 即切，无需改代码
+      - name: Set up Docker Buildx
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
+        uses: docker/setup-buildx-action@v3
+      - name: Build and load API image (scp fallback mode)
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: ghcr.io/li-yongqvan/ai-forum-api:latest
+      - name: Save and compress API image (scp fallback mode)
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
+        run: |
+          docker save ghcr.io/li-yongqvan/ai-forum-api:latest | gzip -1 > api-image.tar.gz
+          ls -lh api-image.tar.gz
+      - name: Upload API image to server (scp fallback mode)
+        if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ env.SSH_HOST }}
@@ -136,7 +131,7 @@ jobs:
           source: api-image.tar.gz
           target: /tmp
       - name: Deploy to server
-        # 未配 SSH secrets 或 DEPLOY_ENABLED!=true 时仅跳过部署步；镜像仍正常推 GHCR
+        # 未配 SSH secrets 或 DEPLOY_ENABLED!=true 时仅跳过部署步
         if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -144,13 +139,27 @@ jobs:
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
           port: 2222   # 服务器 sshd 在 2222
+          command_timeout: 10m   # #43：服务器构建 2-4min，10m 余量足够（F6）
           script: |
-            set -e
+            set -euo pipefail
             cd ~/ai-forum
-            git pull origin main
-            mkdir -p frontend/dist uploads   # 自愈：目录被误删时先以部署用户重建，防 docker 以 root 重建后 scp 写不进
-            docker load -i /tmp/api-image.tar.gz   # A'：替代 docker compose pull api（GHCR ~2.6KB/s 曾超时）
-            docker compose up -d --force-recreate api   # 确保用新 load 的镜像重建 api 容器
-            docker compose exec web nginx -t && docker compose exec web nginx -s reload   # web.conf bind mount 只更新文件不重建容器，需 reload 才生效（评审 Q5）
+            git pull --ff-only origin main   # 先 pull：保证新 deploy-server.sh 就位（首次）
+            mkdir -p frontend/dist uploads
+            if [ "${{ vars.DEPLOY_MODE }}" = "scp" ]; then
+              tar -xzf /tmp/ai-forum-frontend.tar.gz -C frontend/dist/
+              docker load -i /tmp/api-image.tar.gz
+              docker compose up -d --force-recreate api
+              # F3：应急路径也等健康（≤60s），不出「deploy 绿站点红」
+              for i in $(seq 1 30); do
+                st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' ai-forum-api 2>/dev/null || echo none)
+                if [ "$st" = healthy ]; then break; fi
+                if [ "$st" = unhealthy ]; then echo "FATAL: api unhealthy"; exit 1; fi
+                sleep 2
+              done
+              [ "$st" = healthy ] || { echo "FATAL: api not healthy in 60s"; exit 1; }
+              docker compose exec -T web nginx -t && docker compose exec -T web nginx -s reload
+            else
+              bash deploy/deploy-server.sh /tmp/ai-forum-frontend.tar.gz
+            fi
             docker image prune -f
             docker compose ps
