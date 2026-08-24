@@ -120,4 +120,7 @@ describe('md 标签渲染（#54）', () => {
     expect(out).not.toContain('<a class="tag"')
     expect(out).not.toContain('<script>')
   })
+  it('引号前 # 是标签（渲染路径，评审 F2）', () => {
+    expect(md('他说"#AI"')).toContain('<a class="tag" href="#/tag/ai">#AI</a>')
+  })
 })

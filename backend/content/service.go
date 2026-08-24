@@ -3,7 +3,7 @@ package content
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -298,7 +298,7 @@ func (s *service) CreatePost(ctx context.Context, in CreatePostCmd) (PostView, e
 	// #54 标签落库：标签为派生元数据，写失败仅记日志不阻断发帖（评审 §6.4）
 	if tags := ParseTags(in.Content); len(tags) > 0 {
 		if err := s.repo.ReplacePostTags(ctx, p.ID, tags); err != nil {
-			log.Printf("[content] 帖子 %d 标签写入失败: %v", p.ID, err)
+			slog.Warn("content: 帖子标签写入失败", "post_id", p.ID, "err", err)
 		}
 	}
 	return s.postView(ctx, p, in.AuthorID)

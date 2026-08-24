@@ -118,10 +118,8 @@ func (h *ContentHandler) ListPosts(c *gin.Context) {
 		}
 	}
 	if v := c.Query("tag"); v != "" {
-		// #54 标签过滤：归一化小写；空/空白则忽略（不过滤，评审 F5）
-		if t := content.NormalizeTag(v); t != "" {
-			q.Tag = &t
-		}
+		// #54 标签过滤：归一化/空值处理由 service seam 层兜底（评审 §5.1-7，避免双处策略）
+		q.Tag = &v
 	}
 	views, err := h.svc.ListFeed(c.Request.Context(), q)
 	if err != nil {

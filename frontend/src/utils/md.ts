@@ -73,7 +73,11 @@ export function md(src: string): string {
   return `<div class="md">${s}</div>`
 }
 
-/** #54 提取正文标签（归一化小写、去重、保首次出现序）；与后端 ParseTags 同规则、同组用例钉行为。 */
+/**
+ * #54 提取正文标签（归一化小写、去重、保首次出现序）。
+ * 与后端 ParseTags 同规则、同组用例钉行为（评审 F1/Q3）；**仅测试/一致性对齐用**——生产无需，
+ * 后端发帖时已落库解析。
+ */
 export function extractTags(src: string): string[] {
   // 与 md() 相同的剥离顺序（围栏→行内码→图→链接→裸URL），块替换为空格（空格与占位符 \x00N\x00 边界等价）
   let s = esc(src)

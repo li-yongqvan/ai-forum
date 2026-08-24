@@ -551,12 +551,7 @@ func (f *fakeRepo) ReplacePostTags(ctx context.Context, postID int64, tagNames [
 		names = append(names, n)
 	}
 	f.tagPosts[postID] = names
-	for _, n := range names {
-		if _, ok := f.tags[n]; !ok {
-			f.tags[n] = f.nextTagID
-			f.nextTagID++
-		}
-	}
+	f.ensureTagIDs(names)
 	return nil
 }
 
@@ -577,6 +572,11 @@ func (f *fakeRepo) seedPostTags(postID int64, tags ...string) {
 		names = append(names, NormalizeTag(n))
 	}
 	f.tagPosts[postID] = names
+	f.ensureTagIDs(names)
+}
+
+// ensureTagIDs 为未登记标签分配 id（fake 幂等，去重分配循环）。
+func (f *fakeRepo) ensureTagIDs(names []string) {
 	for _, n := range names {
 		if _, ok := f.tags[n]; !ok {
 			f.tags[n] = f.nextTagID
