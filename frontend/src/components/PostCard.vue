@@ -34,6 +34,14 @@ const go = () => router.push(`/post/${props.post.id}`)
       <span v-if="post.is_featured" class="chip ess">精华</span>
       <span class="chip">{{ post.board_name }}</span>
       <span v-if="post.topic_name" class="chip"># {{ post.topic_name }}</span>
+      <!-- #54 标签胶囊：hash 原生导航 + @click.stop 挡卡片 go（评审 §6.5 用 <a> 非 <button>） -->
+      <a
+        v-for="t in post.tags ?? []"
+        :key="t"
+        class="chip tag"
+        :href="`#/tag/${encodeURIComponent(t)}`"
+        @click.stop
+      >#{{ t }}</a>
     </div>
     <h3 class="ptitle">{{ post.title }}</h3>
     <p class="pabstract">{{ plainText(post.content) }}</p>
@@ -108,6 +116,9 @@ const go = () => router.push(`/post/${props.post.id}`)
 .chip.ess {
   background: #f3e4f0;
   color: #8a3b7e;
+}
+.chip.tag {
+  cursor: pointer;
 }
 .ptitle {
   font-size: 15.5px;

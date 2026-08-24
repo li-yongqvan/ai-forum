@@ -117,6 +117,10 @@ func (h *ContentHandler) ListPosts(c *gin.Context) {
 			q.TopicID = &id
 		}
 	}
+	if v := c.Query("tag"); v != "" {
+		// #54 标签过滤：归一化/空值处理由 service seam 层兜底（评审 §5.1-7，避免双处策略）
+		q.Tag = &v
+	}
 	views, err := h.svc.ListFeed(c.Request.Context(), q)
 	if err != nil {
 		respondContentError(c, err)

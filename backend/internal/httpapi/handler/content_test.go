@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,7 @@ type postView struct {
 	LikeCount     int     `json:"like_count"`
 	CommentCount  int     `json:"comment_count"`
 	FavoriteCount int     `json:"favorite_count"`
+	Tags          []string `json:"tags"`
 	Viewer        *struct {
 		Liked           bool `json:"liked"`
 		Favorited       bool `json:"favorited"`
@@ -254,6 +256,91 @@ func TestContentFlow(t *testing.T) {
 	// 游客请求关注流 → 401
 	if w := doJSON(t, r, http.MethodGet, "/api/v1/posts?tab=follow", nil, ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("游客 follow = %d, want 401", w.Code)
+	}
+}
+
+// TestTagsFlow #54 标签端到端：发带 # 帖 → tags 落库返回 → 按 tag 聚合（游客可读）→ 大小写不敏感 → 空 tag 不过滤 → 删帖剔除。
+func TestTagsFlow(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-C1")
+	token := alice.Token
+
+	// 发帖：正文带 #RAG 和 #Agent（大小写混合）
+	w := doJSON(t, r, http.MethodPost, "/api/v1/posts", map[string]any{
+		"board_id": 1, "title": "标签系统", "content": "今天学习 #RAG 和 #Agent",
+	}, token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create post = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created postView
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(created.Tags, []string{"rag", "agent"}) {
+		t.Errorf("create tags = %v, want [rag agent]", created.Tags)
+	}
+
+	// 无标签帖：tags 字段缺省（omitempty）
+	wNo := doJSON(t, r, http.MethodPost, "/api/v1/posts", map[string]any{
+		"board_id": 1, "title": "无标签", "content": "普通正文",
+	}, token)
+	if wNo.Code != http.StatusCreated {
+		t.Fatalf("create no-tag post = %d", wNo.Code)
+	}
+	var noTag postView
+	_ = json.Unmarshal(wNo.Body.Bytes(), &noTag)
+	if len(noTag.Tags) != 0 {
+		t.Errorf("无标签帖 tags = %v, want 空", noTag.Tags)
+	}
+
+	// 按标签聚合（游客可读）
+	wTag := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=rag", nil, "")
+	var feed listResp
+	if err := json.Unmarshal(wTag.Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Items) != 1 || feed.Items[0].ID != created.ID {
+		t.Fatalf("tag=rag items = %d, want 仅带 rag 的帖", len(feed.Items))
+	}
+	if !reflect.DeepEqual(feed.Items[0].Tags, []string{"rag", "agent"}) {
+		t.Errorf("列表 tags = %v, want [rag agent]", feed.Items[0].Tags)
+	}
+
+	// 大小写不敏感：?tag=RAG 命中同一帖
+	wTag2 := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=RAG", nil, "")
+	var feed2 listResp
+	_ = json.Unmarshal(wTag2.Body.Bytes(), &feed2)
+	if len(feed2.Items) != 1 || feed2.Items[0].ID != created.ID {
+		t.Errorf("tag=RAG items = %d, want 1（大小写不敏感）", len(feed2.Items))
+	}
+
+	// 不存在的标签 → 空列表（正常空态）
+	wNone := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=nonexistent", nil, "")
+	var feedNone listResp
+	_ = json.Unmarshal(wNone.Body.Bytes(), &feedNone)
+	if len(feedNone.Items) != 0 {
+		t.Errorf("tag=nonexistent items = %d, want 0", len(feedNone.Items))
+	}
+
+	// 空 tag（?tag=%20 归一化后空）→ 不过滤，返回全部（评审 F3/F5）
+	wSpace := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=%20", nil, "")
+	var feedSpace listResp
+	_ = json.Unmarshal(wSpace.Body.Bytes(), &feedSpace)
+	if len(feedSpace.Items) != 2 {
+		t.Errorf("tag=%%20 items = %d, want 2（空 tag 不过滤）", len(feedSpace.Items))
+	}
+
+	// 删帖 → 标签聚合不再含该帖
+	if w := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/posts/%d", created.ID), nil, token); w.Code != http.StatusOK {
+		t.Fatalf("delete post = %d", w.Code)
+	}
+	wAfter := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=rag", nil, "")
+	var feedAfter listResp
+	_ = json.Unmarshal(wAfter.Body.Bytes(), &feedAfter)
+	if len(feedAfter.Items) != 0 {
+		t.Errorf("删帖后 tag=rag items = %d, want 0", len(feedAfter.Items))
 	}
 }
 

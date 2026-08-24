@@ -29,6 +29,7 @@ export interface ListPostsParams {
   boardId?: number
   topicId?: number
   authorId?: number
+  tag?: string // #54 标签聚合：归一化小写名
   page?: number
   pageSize?: number
 }
@@ -39,6 +40,7 @@ export function listPosts(p: ListPostsParams = {}) {
   if (p.boardId !== undefined) qs.set('board_id', String(p.boardId))
   if (p.topicId !== undefined) qs.set('topic_id', String(p.topicId))
   if (p.authorId !== undefined) qs.set('author_id', String(p.authorId))
+  if (p.tag) qs.set('tag', p.tag)
   qs.set('page', String(p.page ?? 1))
   qs.set('page_size', String(p.pageSize ?? 20))
   return request<PostList>('GET', `/posts?${qs.toString()}`)

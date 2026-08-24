@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -62,6 +63,89 @@ func TestCreatePost(t *testing.T) {
 		_, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "  ", Content: "c"})
 		if !errors.Is(err, ErrContentEmpty) {
 			t.Errorf("error = %v, want ErrContentEmpty", err)
+		}
+	})
+}
+
+func TestCreatePostStoresTags(t *testing.T) {
+	t.Run("成功提取并落库", func(t *testing.T) {
+		f, svc := newContentService()
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "今天学习 #AI 和 #RAG"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if !reflect.DeepEqual(view.Tags, []string{"ai", "rag"}) {
+			t.Errorf("view.Tags = %v, want [ai rag]", view.Tags)
+		}
+		if !reflect.DeepEqual(f.tagPosts[view.ID], []string{"ai", "rag"}) {
+			t.Errorf("fake tagPosts = %v, want [ai rag]", f.tagPosts[view.ID])
+		}
+	})
+
+	t.Run("无标签则 Tags 缺省", func(t *testing.T) {
+		_, svc := newContentService()
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "普通内容"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if view.Tags != nil {
+			t.Errorf("view.Tags = %v, want nil", view.Tags)
+		}
+	})
+}
+
+func TestCreatePostTagWriteFailure(t *testing.T) {
+	// 标签写失败不阻断发帖（评审 §6.4 log-and-continue）
+	f, svc := newContentService()
+	f.errReplaceTags = errors.New("fake: tag db down")
+	view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "#AI"})
+	if err != nil {
+		t.Fatalf("CreatePost() error = %v, want nil（标签写失败不阻断发帖）", err)
+	}
+	if view.ID == 0 {
+		t.Errorf("view.ID = 0, want 帖子已创建")
+	}
+}
+
+func TestListFeedByTag(t *testing.T) {
+	f, svc := newContentService()
+	// 帖子 1 置顶带 ai；帖子 2 普通带 ai；帖子 3 带 rag；帖子 4 软删带 ai（应排除）
+	f.seedPost(1, 1, 1, withPinned(true), withCreatedAt(time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)))
+	f.seedPost(2, 2, 1, withCreatedAt(time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)))
+	f.seedPost(3, 1, 1, withCreatedAt(time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)))
+	f.seedPost(4, 2, 1, withCreatedAt(time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)))
+	f.seedPostTags(1, "AI")
+	f.seedPostTags(2, "ai")
+	f.seedPostTags(3, "rag")
+	f.seedPostTags(4, "AI")
+	if err := f.DeletePost(ctx(), 4); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "AI" // 大小写不敏感：查询归一化小写
+	views, err := svc.ListFeed(ctx(), ListFeedQuery{Tag: &tag, Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListFeed() error = %v", err)
+	}
+	if len(views) != 2 {
+		t.Fatalf("len(views) = %d, want 2（软删帖排除）", len(views))
+	}
+	// 置顶优先 + 时间倒序：帖子 1（置顶）→ 帖子 2
+	if views[0].ID != 1 || views[1].ID != 2 {
+		t.Errorf("views ids = [%d %d], want [1 2]", views[0].ID, views[1].ID)
+	}
+	if !reflect.DeepEqual(views[0].Tags, []string{"ai"}) {
+		t.Errorf("views[0].Tags = %v, want [ai]", views[0].Tags)
+	}
+
+	t.Run("不存在的标签返回空（非 nil）", func(t *testing.T) {
+		none := "nonexistent"
+		vs, err := svc.ListFeed(ctx(), ListFeedQuery{Tag: &none, Page: 1, PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFeed() error = %v", err)
+		}
+		if len(vs) != 0 || vs == nil {
+			t.Errorf("vs = %#v, want 空非 nil 列表契约", vs)
 		}
 	})
 }

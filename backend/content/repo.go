@@ -2,12 +2,13 @@ package content
 
 import "context"
 
-// PostQuery 列表查询参数（feed / 板块 / 话题 / 作者 复用，分页统一 limit/offset）。
+// PostQuery 列表查询参数（feed / 板块 / 话题 / 作者 / 标签 复用，分页统一 limit/offset）。
 type PostQuery struct {
 	Feed             string // all | follow
 	AuthorID         *int64
 	BoardID          *int64
 	TopicID          *int64
+	Tag              *string // #54 标签过滤：按归一化小写名匹配
 	FollowedUserIDs  []int64 // follow 流：关注的用户
 	FollowedBoardIDs []int64 // follow 流：关注的板块
 	FollowedTopicIDs []int64 // follow 流：关注的话题
@@ -70,4 +71,8 @@ type Repo interface {
 	ListFavoritedPosts(ctx context.Context, userID int64, offset, limit int) ([]*Post, error)
 	ListFollowedBoards(ctx context.Context, followerID int64, offset, limit int) ([]*Board, error)
 	ListFollowedTopics(ctx context.Context, followerID int64, offset, limit int) ([]*Topic, error)
+
+	// tags（#54）
+	ReplacePostTags(ctx context.Context, postID int64, tagNames []string) error
+	ListTagsByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]string, error)
 }
