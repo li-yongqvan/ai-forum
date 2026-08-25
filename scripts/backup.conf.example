@@ -1,0 +1,14 @@
+# 异地备份配置示例（#60）
+# 实际配置文件应放在 $HOME/backup.conf（仓库外），并被 scripts/backup-offsite.sh source。
+
+# 备份目标，可插拔 scheme：
+#   local://路径   → 同机目录（默认，短期通电方案）
+#   scp://host/path → 占位，暂未实现
+#   oss://bucket/path → 占位，预留
+BACKUP_DEST="local://${HOME}/backups-offsite"
+
+# 目标端保留份数（按文件 mtime 保留最新的 N 份）
+BACKUP_RETENTION=14
+
+# 本地备份源目录（现有 cron 每晚产生 pg_dump / uploads / .env 快照）
+BACKUP_SRC="${HOME}/backups"

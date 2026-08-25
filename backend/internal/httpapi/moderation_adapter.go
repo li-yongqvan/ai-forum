@@ -106,6 +106,23 @@ func (a userGatewayAdapter) GetUserView(ctx context.Context, id int64) (moderati
 	return moderation.UserRef{ID: u.ID, Username: u.Username}, nil
 }
 
+// BanUser 调 user 域封禁，并把 user 域错误翻译为 moderation 哨兵错误（#60，S1：moderation 不 import user）。
+func (a userGatewayAdapter) BanUser(ctx context.Context, in moderation.BanUserCmd) error {
+	err := a.svc.Ban(ctx, user.BanCmd{OperatorID: in.OperatorID, TargetID: in.TargetID})
+	switch {
+	case errors.Is(err, user.ErrSelfBan):
+		return moderation.ErrSelfBan
+	case errors.Is(err, user.ErrCannotBanAdmin):
+		return moderation.ErrCannotBanAdmin
+	case errors.Is(err, user.ErrAlreadyBanned):
+		return moderation.ErrAlreadyBanned
+	case errors.Is(err, user.ErrNotFound):
+		return moderation.ErrNotFound
+	default:
+		return err
+	}
+}
+
 // ---- moderation.Notifier adapter ----
 
 type notifierAdapter struct {

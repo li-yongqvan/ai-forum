@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Report } from '../api/types'
 import Empty from '../components/Empty.vue'
 
-const authState = { isMod: true }
-vi.mock('vant', () => ({ showToast: vi.fn() }))
+const authState = { isMod: true, isAdmin: false }
+vi.mock('vant', () => ({ showToast: vi.fn(), showConfirmDialog: vi.fn() }))
 vi.mock('../stores/auth', () => ({ useAuthStore: () => authState }))
 vi.mock('../api/report', () => ({
   listReports: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock('../api/report', () => ({
 
 import Reports from './Reports.vue'
 import * as api from '../api/report'
-import { showToast } from 'vant'
+import { showConfirmDialog, showToast } from 'vant'
 
 beforeEach(() => {
   vi.clearAllMocks() // 清调用历史（保留 mockResolvedValue 实现）
@@ -90,5 +90,63 @@ describe('Reports 举报处理队列', () => {
     expect(wrapper.findComponent(Empty).exists()).toBe(true)
     expect(wrapper.findComponent(Empty).props('title')).toBe('无权限访问')
     authState.isMod = true
+  })
+
+  it('admin 额外可见「封禁用户」动作', async () => {
+    authState.isAdmin = true
+    const wrapper = await mountWith([report()])
+    await wrapper.find('.hbtn').trigger('click')
+    const labels = wrapper.findAll('.act').map((w) => w.text())
+    expect(labels).toEqual(['忽略', '删除帖子', '警告（会通知被举报人）', '封禁用户'])
+    authState.isAdmin = false
+  })
+
+  it('非 admin 不显示「封禁用户」', async () => {
+    authState.isAdmin = false
+    const wrapper = await mountWith([report()])
+    await wrapper.find('.hbtn').trigger('click')
+    const labels = wrapper.findAll('.act').map((w) => w.text())
+    expect(labels).not.toContain('封禁用户')
+  })
+
+  it('ban 原因必填：空原因 toast 并阻止提交', async () => {
+    authState.isAdmin = true
+    const wrapper = await mountWith([report()])
+    await wrapper.find('.hbtn').trigger('click')
+    await wrapper.findAll('.act').find((w) => w.text() === '封禁用户')!.trigger('click')
+    await wrapper.find('.submit').trigger('click')
+    await flushPromises()
+    expect(showToast).toHaveBeenCalledWith('请填写封禁原因')
+    expect(api.handleReport).not.toHaveBeenCalled()
+    authState.isAdmin = false
+  })
+
+  it('ban 二次确认后提交，并显示已封禁', async () => {
+    authState.isAdmin = true
+    vi.mocked(showConfirmDialog).mockResolvedValue(undefined)
+    vi.mocked(api.handleReport).mockResolvedValue(undefined)
+    const wrapper = await mountWith([report()])
+    await wrapper.find('.hbtn').trigger('click')
+    await wrapper.findAll('.act').find((w) => w.text() === '封禁用户')!.trigger('click')
+    await wrapper.find('.note').setValue('严重违规')
+    await wrapper.find('.submit').trigger('click')
+    await flushPromises()
+    expect(showConfirmDialog).toHaveBeenCalled()
+    expect(api.handleReport).toHaveBeenCalledWith(1, 'ban_user', '严重违规')
+    expect(showToast).toHaveBeenCalledWith('已封禁')
+    authState.isAdmin = false
+  })
+
+  it('ban 取消确认不提交', async () => {
+    authState.isAdmin = true
+    vi.mocked(showConfirmDialog).mockRejectedValue(new Error('cancel'))
+    const wrapper = await mountWith([report()])
+    await wrapper.find('.hbtn').trigger('click')
+    await wrapper.findAll('.act').find((w) => w.text() === '封禁用户')!.trigger('click')
+    await wrapper.find('.note').setValue('严重违规')
+    await wrapper.find('.submit').trigger('click')
+    await flushPromises()
+    expect(api.handleReport).not.toHaveBeenCalled()
+    authState.isAdmin = false
   })
 })

@@ -339,10 +339,12 @@ func TestHandleReportFailures(t *testing.T) {
 		want error
 	}{
 		{"非 mod 角色", func(c *HandleReportCmd) { c.OperatorRole = "user" }, ErrInvalidAction},
-		{"封禁留 #34", func(c *HandleReportCmd) { c.Action = ActionBan }, ErrInvalidAction},
+		{" moderator 封禁拒绝", func(c *HandleReportCmd) { c.Action = ActionBan }, ErrInvalidAction},
 		{"非法动作", func(c *HandleReportCmd) { c.Action = "nuke" }, ErrInvalidAction},
 		{"delete_post 目标非 post", func(c *HandleReportCmd) { c.Action = ActionDeletePost; c.ReportID = cid }, ErrInvalidAction},
 		{"备注超 500（F5）", func(c *HandleReportCmd) { c.Note = strings.Repeat("长", 501) }, ErrInvalidAction},
+		{"ban 原因空", func(c *HandleReportCmd) { c.Action = ActionBan; c.OperatorRole = "admin"; c.Note = "" }, ErrInvalidAction},
+		{"ban 原因仅空白", func(c *HandleReportCmd) { c.Action = ActionBan; c.OperatorRole = "admin"; c.Note = "  " }, ErrInvalidAction},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -480,4 +482,157 @@ func TestRecordAction(t *testing.T) {
 			t.Errorf("error = %v, want ErrInvalidAction", err)
 		}
 	})
+}
+
+// TestHandleReportBanUser 覆盖 #60 弹窗封禁：admin 成功、目标解析、通知、已封 409。
+func TestHandleReportBanUser(t *testing.T) {
+	t.Run("admin ban post 举报作者", func(t *testing.T) {
+		_, repo, content, users, notify, rep := newSvc(t)
+		svc := NewService(repo, content, users, notify)
+
+		err := svc.HandleReport(ctx(), HandleReportCmd{
+			ReportID: rep.ID, HandlerID: 102, OperatorRole: "admin", Action: ActionBan, Note: "严重违规",
+		})
+		if err != nil {
+			t.Fatalf("ban = %v", err)
+		}
+		// 举报结案
+		r, _ := repo.GetReportByID(ctx(), rep.ID)
+		if r.Status != StatusResolved {
+			t.Errorf("status = %s, want resolved", r.Status)
+		}
+		// 审计记被封用户
+		if len(repo.actions) != 1 || repo.actions[0].Action != ActionBan || repo.actions[0].TargetType != "user" || repo.actions[0].TargetID != 100 {
+			t.Errorf("审计 = %+v", repo.actions)
+		}
+		if repo.actions[0].Reason != "严重违规" {
+			t.Errorf("reason = %q, want 严重违规", repo.actions[0].Reason)
+		}
+		// 双通知
+		if len(notify.calls) != 2 {
+			t.Fatalf("应发 2 条通知, got %+v", notify.calls)
+		}
+		if notify.calls[0].RecipientID != 101 || notify.calls[0].TargetTitle == nil || *notify.calls[0].TargetTitle != "已封禁用户" {
+			t.Errorf("举报人通知 = %+v", notify.calls[0])
+		}
+		c1 := notify.calls[1]
+		if c1.RecipientID != 100 || c1.Type != "report_handled" || c1.TargetTitle == nil || *c1.TargetTitle != "你因「垃圾广告」被举报，已被封禁" {
+			t.Errorf("被举报人通知 = %+v", c1)
+		}
+	})
+
+	t.Run("admin ban user 目标", func(t *testing.T) {
+		repo := newFakeRepo()
+		content := newFakeContent()
+		users := newFakeUsers()
+		notify := newFakeNotifier()
+		svc := NewService(repo, content, users, notify)
+		users.add(100, "alice")
+		users.add(101, "bob")
+		users.add(102, "admin")
+		content.addRef("user", 100, TargetRef{AuthorID: 100, Title: ""})
+
+		id, err := svc.CreateReport(ctx(), CreateReportCmd{ReporterID: 101, TargetType: "user", TargetID: 100, Reason: "违法违规"})
+		if err != nil {
+			t.Fatalf("CreateReport = %v", err)
+		}
+		if err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: id, HandlerID: 102, OperatorRole: "admin", Action: ActionBan, Note: "违法"}); err != nil {
+			t.Fatalf("ban = %v", err)
+		}
+		if len(repo.actions) != 1 || repo.actions[0].TargetID != 100 {
+			t.Errorf("审计 = %+v", repo.actions)
+		}
+	})
+
+	t.Run("moderator 拒绝 ban", func(t *testing.T) {
+		svc, _, _, _, _, rep := newSvc(t)
+		err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: rep.ID, HandlerID: 102, OperatorRole: "moderator", Action: ActionBan, Note: "x"})
+		if !errors.Is(err, ErrInvalidAction) {
+			t.Errorf("err = %v, want ErrInvalidAction", err)
+		}
+	})
+
+	t.Run("重复封禁 → ErrAlreadyBanned", func(t *testing.T) {
+		_, repo, content, users, notify, rep := newSvc(t)
+		svc := NewService(repo, content, users, notify)
+		if err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: rep.ID, HandlerID: 102, OperatorRole: "admin", Action: ActionBan, Note: "第一次"}); err != nil {
+			t.Fatalf("首次 ban = %v", err)
+		}
+		// 再建一条同目标举报，再次 ban → 已封
+		id2, err := svc.CreateReport(ctx(), CreateReportCmd{ReporterID: 101, TargetType: "post", TargetID: 1, Reason: "违法违规"})
+		if err != nil {
+			t.Fatalf("二次举报 = %v", err)
+		}
+		err = svc.HandleReport(ctx(), HandleReportCmd{ReportID: id2, HandlerID: 102, OperatorRole: "admin", Action: ActionBan, Note: "第二次"})
+		if !errors.Is(err, ErrAlreadyBanned) {
+			t.Errorf("err = %v, want ErrAlreadyBanned", err)
+		}
+	})
+
+	t.Run("自封 → ErrSelfBan", func(t *testing.T) {
+		_, repo, content, users, notify, rep := newSvc(t)
+		svc := NewService(repo, content, users, notify)
+		// 处理人即被举报作者（100）→ self-ban
+		err := svc.HandleReport(ctx(), HandleReportCmd{ReportID: rep.ID, HandlerID: 100, OperatorRole: "admin", Action: ActionBan, Note: "自封"})
+		if !errors.Is(err, ErrSelfBan) {
+			t.Errorf("err = %v, want ErrSelfBan", err)
+		}
+	})
+}
+
+// TestListActions 覆盖审计只读查询：过滤、分页、enrich 用户名。
+func TestListActions(t *testing.T) {
+	repo := newFakeRepo()
+	users := newFakeUsers()
+	users.add(10, "modA")
+	users.add(11, "modB")
+	users.add(99, "ghost") // 不存在操作人，enrich 为空
+	svc := NewService(repo, newFakeContent(), users, newFakeNotifier())
+
+	// 直接 append 三条审计（绕过 RecordAction 以测试不同 moderator）
+	now := time.Now()
+	repo.actions = append(repo.actions,
+		&ModerationAction{ID: 1, ModeratorID: 10, Action: ActionBan, TargetType: "user", TargetID: 100, Reason: "r1", CreatedAt: now.Add(-time.Hour)},
+		&ModerationAction{ID: 2, ModeratorID: 11, Action: ActionDeletePost, TargetType: "post", TargetID: 5, Reason: "r2", CreatedAt: now},
+		&ModerationAction{ID: 3, ModeratorID: 10, Action: ActionWarn, TargetType: "user", TargetID: 101, Reason: "r3", CreatedAt: now.Add(-2 * time.Hour)},
+	)
+
+	all, err := svc.ListActions(ctx(), ListActionsQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListActions = %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all = %d, want 3", len(all))
+	}
+	// 倒序：id 2 → 1 → 3（按 created_at 倒序）
+	if all[0].ID != 2 || all[1].ID != 1 || all[2].ID != 3 {
+		t.Errorf("order = %v", []int64{all[0].ID, all[1].ID, all[2].ID})
+	}
+	if all[0].ModeratorUsername != "modB" || all[1].ModeratorUsername != "modA" {
+		t.Errorf("usernames = %+v", []string{all[0].ModeratorUsername, all[1].ModeratorUsername})
+	}
+
+	byMod, err := svc.ListActions(ctx(), ListActionsQuery{ModeratorID: 10, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byMod) != 2 {
+		t.Errorf("byMod = %d, want 2", len(byMod))
+	}
+
+	byTarget, err := svc.ListActions(ctx(), ListActionsQuery{TargetType: "user", TargetID: 100, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byTarget) != 1 || byTarget[0].ID != 1 {
+		t.Errorf("byTarget = %+v", byTarget)
+	}
+
+	page, err := svc.ListActions(ctx(), ListActionsQuery{Limit: 2, Offset: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || page[0].ID != 1 || page[1].ID != 3 {
+		t.Errorf("page = %v", []int64{page[0].ID, page[1].ID})
+	}
 }

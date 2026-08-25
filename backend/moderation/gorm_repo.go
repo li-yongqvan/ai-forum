@@ -128,6 +128,34 @@ func (r *gormRepo) AppendAction(ctx context.Context, a *ModerationAction) error 
 	return r.db.WithContext(ctx).Create(a).Error
 }
 
+// ListActions 审计日志只读查询（#60）：可选过滤 + 分页，按 created_at DESC, id DESC 排序（F6 稳定排序）。
+func (r *gormRepo) ListActions(ctx context.Context, in ListActionsQuery) ([]*ModerationAction, error) {
+	q := r.db.WithContext(ctx).Model(&ModerationAction{}).Order("created_at DESC, id DESC")
+	if in.TargetType != "" {
+		q = q.Where("target_type = ?", in.TargetType)
+	}
+	if in.TargetID > 0 {
+		q = q.Where("target_id = ?", in.TargetID)
+	}
+	if in.Action != "" {
+		q = q.Where("action = ?", in.Action)
+	}
+	if in.ModeratorID > 0 {
+		q = q.Where("moderator_id = ?", in.ModeratorID)
+	}
+	if in.Limit > 0 {
+		q = q.Limit(in.Limit)
+	}
+	if in.Offset > 0 {
+		q = q.Offset(in.Offset)
+	}
+	var acts []*ModerationAction
+	if err := q.Find(&acts).Error; err != nil {
+		return nil, err
+	}
+	return acts, nil
+}
+
 // Tx 在单事务内执行 fn（S2：HandleReport 的审计+状态原子提交）。
 func (r *gormRepo) Tx(ctx context.Context, fn func(Repo) error) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

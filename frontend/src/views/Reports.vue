@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 举报处理队列（#33，IA §4 /reports + §5.6：mod 队列 → 处理弹窗按目标类型给动作 → 审计 + 结果通知）
 import { computed, onMounted, ref } from 'vue'
-import { showToast } from 'vant'
+import { showConfirmDialog, showToast } from 'vant'
 import { useAuthStore } from '../stores/auth'
 import * as api from '../api/report'
 import type { Report, ReportTargetType } from '../api/types'
@@ -32,16 +32,24 @@ const action = ref('')
 const note = ref('')
 const submitting = ref(false)
 
-// 按目标类型给动作集（D1：忽略/删帖删评/警告；封禁留 #34）。#53 D2：警告会通知被举报人（反转 O4）。
+// 按目标类型给动作集（D1：忽略/删帖删评/警告；#60 admin 额外可见「封禁用户」）。
+// #53 D2：警告会通知被举报人（反转 O4）；#60 ban 也会通知被举报人。
 const allowedActions = computed(() => {
   const r = current.value
   if (!r) return []
-  const acts: { key: string; label: string }[] = [{ key: 'dismiss', label: '忽略' }]
+  const acts: { key: string; label: string; danger?: boolean }[] = [{ key: 'dismiss', label: '忽略' }]
   if (r.target_type === 'post') acts.push({ key: 'delete_post', label: '删除帖子' })
   if (r.target_type === 'comment') acts.push({ key: 'delete_comment', label: '删除评论' })
   acts.push({ key: 'warn', label: '警告（会通知被举报人）' })
+  if (auth.isAdmin) acts.push({ key: 'ban_user', label: '封禁用户', danger: true })
   return acts
 })
+
+const isBan = computed(() => action.value === 'ban_user')
+const notePlaceholder = computed(() =>
+  isBan.value ? '封禁原因（必填，≤500 字）' : '处理备注（可选，≤500 字）'
+)
+const submitLabel = computed(() => (isBan.value ? '确认封禁' : '确认处理'))
 
 const targetLabel = (t: ReportTargetType) => (t === 'post' ? '帖子' : t === 'comment' ? '评论' : '用户')
 
@@ -58,10 +66,25 @@ async function submitHandle() {
     showToast('请选择处理动作')
     return
   }
+  const trimmed = note.value.trim()
+  if (isBan.value && !trimmed) {
+    showToast('请填写封禁原因')
+    return
+  }
+  if (isBan.value) {
+    try {
+      await showConfirmDialog({
+        title: '确认封禁该用户？',
+        message: '封禁后该用户无法登录与执行写操作，解封需管理员操作。',
+      })
+    } catch {
+      return // 取消
+    }
+  }
   submitting.value = true
   try {
-    await api.handleReport(r.id, action.value, note.value.trim() || undefined)
-    showToast('已处理')
+    await api.handleReport(r.id, action.value, trimmed || undefined)
+    showToast(isBan.value ? '已封禁' : '已处理')
     handleShow.value = false
     load()
   } catch (e) {
@@ -103,15 +126,15 @@ async function submitHandle() {
             v-for="a in allowedActions"
             :key="a.key"
             class="act"
-            :class="{ on: action === a.key }"
+            :class="{ on: action === a.key, danger: a.danger }"
             @click="action = a.key"
           >
             {{ a.label }}
           </button>
         </div>
-        <textarea v-model="note" class="note" rows="2" maxlength="500" placeholder="处理备注（可选，≤500 字）" />
+        <textarea v-model="note" class="note" rows="2" maxlength="500" :placeholder="notePlaceholder" />
         <van-button type="primary" block round class="submit" :loading="submitting" @click="submitHandle">
-          确认处理
+          {{ submitLabel }}
         </van-button>
       </div>
     </van-popup>
@@ -214,6 +237,10 @@ async function submitHandle() {
   border-color: var(--danger);
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.act.danger.on {
+  background: var(--danger);
+  color: #fff;
 }
 .note {
   width: 100%;
