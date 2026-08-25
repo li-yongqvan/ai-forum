@@ -24,10 +24,10 @@ const AUTH_PAGES = ['/login', '/register']
 const isAuthPage = computed(() => AUTH_PAGES.includes(route.path))
 const isL1 = computed(() => L1.includes(route.path))
 const title = computed(() => (route.meta.title as string) || 'AI 智联论坛')
-// FAB 显隐（IA §5.1）：auth 页隐藏；/write、/post/:id 隐藏（避免遮挡输入栏）；其余 L2 保留
+// FAB 显隐（IA §5.1）：auth 页隐藏；/write、/post/:id、/messages 隐藏（避免遮挡输入栏）；其余 L2 保留
 const showFab = computed(() => {
   if (isAuthPage.value) return false
-  if (route.path.startsWith('/write') || route.path.startsWith('/post/')) return false
+  if (route.path.startsWith('/write') || route.path.startsWith('/post/') || route.path.startsWith('/messages/')) return false
   return true
 })
 </script>

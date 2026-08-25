@@ -2,7 +2,7 @@
 // 用户主页（v2 §4：GET /users/:id 公开资料 + 帖子流 + 关注/私信按钮；
 // #34：admin 加封禁/解封入口 + 封禁徽标 + 用户举报入口，兑现 IA §5.5 / #33 D3）
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { useAuthStore } from '../stores/auth'
 import * as api from '../api/content'
@@ -15,6 +15,7 @@ import PostList from '../components/PostList.vue'
 import ReportSheet from '../components/ReportSheet.vue'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const id = computed(() => Number(route.params.id))
 const profile = ref<UserProfile | null>(null)
@@ -46,7 +47,11 @@ async function toggleFollow() {
   }
 }
 function onMessage() {
-  showToast('私信即将上线')
+  if (!auth.isLoggedIn) {
+    goLoginWithReturn(route.fullPath)
+    return
+  }
+  router.push(`/messages/${id.value}`)
 }
 
 // ---- #34 用户举报入口（复用 ReportSheet，target_type=user；未登录引导登录） ----

@@ -15,6 +15,7 @@ const router = createRouter({
     { path: '/user/:id', component: () => import('../views/UserProfile.vue'), meta: { title: '用户主页' } },
     { path: '/me', component: () => import('../views/Me.vue'), meta: { title: '我的' } },
     { path: '/notifications', component: () => import('../views/Notifications.vue'), meta: { title: '通知' } },
+    { path: '/messages/:peerId', component: () => import('../views/Chat.vue'), meta: { title: '私信', requireAuth: true } },
     { path: '/reports', component: () => import('../views/Reports.vue'), meta: { title: '举报管理', requireAuth: true } },
     { path: '/settings', component: () => import('../views/Settings.vue'), meta: { title: '设置' } },
     { path: '/tag/:name', component: () => import('../views/TagDetail.vue'), meta: { title: '标签' } },

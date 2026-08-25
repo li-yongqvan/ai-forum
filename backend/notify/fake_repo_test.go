@@ -62,15 +62,6 @@ func (f *fakeRepo) MarkAllNotificationsRead(ctx context.Context, recipientID int
 	return nil
 }
 
-func (f *fakeRepo) MarkMessageRead(ctx context.Context, id, toUserID int64) error {
-	m, ok := f.messages[id]
-	if !ok || m.ToUserID != toUserID {
-		return ErrNotFound
-	}
-	m.IsRead = true
-	return nil
-}
-
 func (f *fakeRepo) UnreadCount(ctx context.Context, recipientID int64) (int64, error) {
 	var n int64
 	for _, x := range f.notifications {
@@ -94,33 +85,100 @@ func (f *fakeRepo) ListNotifications(ctx context.Context, recipientID int64, off
 		out = append(out, *n)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
-	if offset > len(out) {
-		offset = len(out)
+	return slicePage(out, offset, limit), nil
+}
+
+// ---- 私信（#59） ----
+
+func (f *fakeRepo) ListConversations(ctx context.Context, userID int64, offset, limit int) ([]Conversation, error) {
+	type agg struct {
+		lastID      int64
+		unreadCount int64
 	}
-	if limit > 0 && offset+limit < len(out) {
-		out = out[offset : offset+limit]
-	} else if offset < len(out) {
-		out = out[offset:]
+	m := make(map[int64]*agg)
+	for _, msg := range f.messages {
+		if msg.FromUserID != userID && msg.ToUserID != userID {
+			continue
+		}
+		peer := msg.FromUserID
+		if peer == userID {
+			peer = msg.ToUserID
+		}
+		a, ok := m[peer]
+		if !ok {
+			a = &agg{}
+			m[peer] = a
+		}
+		if msg.ID > a.lastID {
+			a.lastID = msg.ID
+		}
+		if msg.ToUserID == userID && !msg.IsRead {
+			a.unreadCount++
+		}
+	}
+	type pair struct {
+		peer   int64
+		lastID int64
+		unread int64
+	}
+	pairs := make([]pair, 0, len(m))
+	for peer, a := range m {
+		pairs = append(pairs, pair{peer, a.lastID, a.unreadCount})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].lastID > pairs[j].lastID })
+	pairs = slicePage(pairs, offset, limit)
+
+	out := make([]Conversation, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, Conversation{
+			PeerID:      p.peer,
+			LastMessage: *f.messages[p.lastID],
+			UnreadCount: p.unread,
+		})
 	}
 	return out, nil
 }
 
-func (f *fakeRepo) ListMessages(ctx context.Context, toUserID int64, offset, limit int) ([]Message, error) {
+func (f *fakeRepo) ListConversationMessages(ctx context.Context, userID, peerID int64, offset, limit int) ([]Message, error) {
 	out := make([]Message, 0)
 	for _, m := range f.messages {
-		if m.ToUserID != toUserID {
-			continue
+		if (m.FromUserID == userID && m.ToUserID == peerID) || (m.FromUserID == peerID && m.ToUserID == userID) {
+			out = append(out, *m)
 		}
-		out = append(out, *m)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
-	if offset > len(out) {
-		offset = len(out)
+	return slicePage(out, offset, limit), nil
+}
+
+func (f *fakeRepo) MarkConversationRead(ctx context.Context, userID, peerID int64) error {
+	for _, m := range f.messages {
+		if m.ToUserID == userID && m.FromUserID == peerID && !m.IsRead {
+			m.IsRead = true
+		}
 	}
-	if limit > 0 && offset+limit < len(out) {
-		out = out[offset : offset+limit]
-	} else if offset < len(out) {
-		out = out[offset:]
+	return nil
+}
+
+func (f *fakeRepo) UnreadMessageCount(ctx context.Context, userID int64) (int64, error) {
+	var n int64
+	for _, m := range f.messages {
+		if m.ToUserID == userID && !m.IsRead {
+			n++
+		}
 	}
-	return out, nil
+	return n, nil
+}
+
+func slicePage[T any](s []T, offset, limit int) []T {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(s) {
+		offset = len(s)
+	}
+	end := len(s)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return s[offset:end]
 }

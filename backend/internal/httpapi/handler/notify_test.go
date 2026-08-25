@@ -3,6 +3,7 @@ package handler_test
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -200,5 +201,151 @@ func TestNotificationsUnreadFilter(t *testing.T) {
 	}
 	if len(list.Items) != 1 || list.Items[0].ID != 2 {
 		t.Errorf("unread 过滤 = %+v, want 仅 id 2", list.Items)
+	}
+}
+
+// ---- 私信（#59） ----
+
+type messageResp struct {
+	ID         int64  `json:"id"`
+	FromUserID int64  `json:"from_user_id"`
+	ToUserID   int64  `json:"to_user_id"`
+	Content    string `json:"content"`
+	IsRead     bool   `json:"is_read"`
+}
+
+type messageList struct {
+	Items []messageResp `json:"items"`
+}
+
+type conversationList struct {
+	Items []struct {
+		PeerID      int64       `json:"peer_id"`
+		PeerName    string      `json:"peer_name"`
+		LastMessage messageResp `json:"last_message"`
+		UnreadCount int64       `json:"unread_count"`
+	} `json:"items"`
+}
+
+// 私信接口需登录。
+func TestMessagesRequireAuth(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	for _, tc := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/v1/conversations"},
+		{http.MethodGet, "/api/v1/conversations/1/messages"},
+		{http.MethodPost, "/api/v1/messages"},
+		{http.MethodPost, "/api/v1/conversations/1/read"},
+	} {
+		w := doJSON(t, r, tc.method, tc.path, nil, "")
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s 无 token = %d, want 401", tc.method, tc.path, w.Code)
+		}
+	}
+}
+
+// A 给 B 发私信 → B 看到会话 + 未读；B 读会话 → 未读归零。
+func TestDirectMessageFlow(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerNotifyUser(t, r, gdb, "alice", "DM1")
+	bob := registerNotifyUser(t, r, gdb, "bob", "DM2")
+
+	// alice 给 bob 发私信
+	w := doJSON(t, r, http.MethodPost, "/api/v1/messages", map[string]any{
+		"to_user_id": bob.User.ID,
+		"content":    "hello bob",
+	}, alice.Token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("send message = %d, body=%s", w.Code, w.Body.String())
+	}
+	var sent messageResp
+	if err := json.Unmarshal(w.Body.Bytes(), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.Content != "hello bob" || sent.FromUserID != alice.User.ID || sent.ToUserID != bob.User.ID {
+		t.Errorf("sent = %+v", sent)
+	}
+
+	// bob 未读数 = 1（合并通知+私信）
+	var cnt struct{ Count int64 `json:"count"` }
+	w2 := doJSON(t, r, http.MethodGet, "/api/v1/notifications/unread_count", nil, bob.Token)
+	if err := json.Unmarshal(w2.Body.Bytes(), &cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt.Count != 1 {
+		t.Errorf("bob 未读数 = %d, want 1", cnt.Count)
+	}
+
+	// bob 会话列表 1 条，未读 1
+	w3 := doJSON(t, r, http.MethodGet, "/api/v1/conversations", nil, bob.Token)
+	var clist conversationList
+	if err := json.Unmarshal(w3.Body.Bytes(), &clist); err != nil {
+		t.Fatal(err)
+	}
+	if len(clist.Items) != 1 || clist.Items[0].PeerID != alice.User.ID || clist.Items[0].UnreadCount != 1 {
+		t.Errorf("bob 会话 = %+v, want 1 条来自 alice 未读", clist.Items)
+	}
+
+	// bob 读会话
+	w4 := doJSON(t, r, http.MethodPost, "/api/v1/conversations/"+strconv.FormatInt(alice.User.ID, 10)+"/read", nil, bob.Token)
+	if w4.Code != http.StatusOK {
+		t.Fatalf("mark conversation read = %d, body=%s", w4.Code, w4.Body.String())
+	}
+
+	// 未读数归零
+	w5 := doJSON(t, r, http.MethodGet, "/api/v1/notifications/unread_count", nil, bob.Token)
+	if err := json.Unmarshal(w5.Body.Bytes(), &cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt.Count != 0 {
+		t.Errorf("已读后未读数 = %d, want 0", cnt.Count)
+	}
+}
+
+// 私信校验：自发言/接收人不存在/超长/限频。
+func TestSendMessageValidation(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerNotifyUser(t, r, gdb, "alice", "DM3")
+	bob := registerNotifyUser(t, r, gdb, "bob", "DM4")
+
+	cases := []struct {
+		name    string
+		body    map[string]any
+		token   string
+		want    int
+	}{
+		{"self", map[string]any{"to_user_id": alice.User.ID, "content": "hi"}, alice.Token, http.StatusBadRequest},
+		{"not found", map[string]any{"to_user_id": 99999, "content": "hi"}, alice.Token, http.StatusNotFound},
+		{"empty", map[string]any{"to_user_id": bob.User.ID, "content": "   "}, alice.Token, http.StatusBadRequest},
+		{"too long", map[string]any{"to_user_id": bob.User.ID, "content": string(make([]byte, 2001))}, alice.Token, http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := doJSON(t, r, http.MethodPost, "/api/v1/messages", c.body, c.token)
+			if w.Code != c.want {
+				t.Errorf("%s = %d, want %d", c.name, w.Code, c.want)
+			}
+		})
+	}
+
+	// 限频：对同一对端连续发两条，第二条 429
+	w := doJSON(t, r, http.MethodPost, "/api/v1/messages", map[string]any{
+		"to_user_id": bob.User.ID, "content": "a",
+	}, alice.Token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first send = %d", w.Code)
+	}
+	w2 := doJSON(t, r, http.MethodPost, "/api/v1/messages", map[string]any{
+		"to_user_id": bob.User.ID, "content": "b",
+	}, alice.Token)
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("rate limit = %d, want 429", w2.Code)
 	}
 }

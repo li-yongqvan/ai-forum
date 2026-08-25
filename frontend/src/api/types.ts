@@ -136,6 +136,24 @@ export interface AppNotification {
   created_at: string
 }
 
+// 私信（#59）
+export interface AppMessage {
+  id: number
+  from_user_id: number
+  to_user_id: number
+  content: string
+  is_read: boolean
+  created_at: string
+}
+
+export interface Conversation {
+  peer_id: number
+  peer_name: string
+  peer_avatar?: string
+  last_message: AppMessage
+  unread_count: number
+}
+
 // ---- 举报/治理（#33） ----
 
 export type ReportTargetType = 'user' | 'post' | 'comment'

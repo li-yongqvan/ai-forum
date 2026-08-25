@@ -3,7 +3,11 @@ package notify
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- 命令 / 读模型 DTO ----
@@ -41,6 +45,26 @@ type MessageView struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type ConversationView struct {
+	PeerID      int64       `json:"peer_id"`
+	PeerName    string      `json:"peer_name"`
+	PeerAvatar  *string     `json:"peer_avatar,omitempty"`
+	LastMessage MessageView `json:"last_message"`
+	UnreadCount int64       `json:"unread_count"`
+}
+
+// PeerView 是 notify 域可见的最小对端画像（handler 层可再 enrich）。
+type PeerView struct {
+	ID       int64
+	Username string
+	Avatar   *string
+}
+
+// PeerProvider 供 notify handler 解析对端画像（notify 零依赖，不 import user）。
+type PeerProvider interface {
+	GetPeerView(ctx context.Context, id int64) (PeerView, error)
+}
+
 type SendMessageCmd struct {
 	FromUserID int64
 	ToUserID   int64
@@ -62,19 +86,34 @@ type Service interface {
 	ListNotifications(ctx context.Context, in ListQuery) ([]NotificationView, error)
 	UnreadCount(ctx context.Context, recipientID int64) (int64, error)
 
-	SendMessage(ctx context.Context, in SendMessageCmd) error
-	MarkMessageRead(ctx context.Context, id, toUserID int64) error
-	ListMessages(ctx context.Context, in ListQuery) ([]MessageView, error)
+	SendMessage(ctx context.Context, in SendMessageCmd) (MessageView, error)
+	ListConversations(ctx context.Context, in ListQuery) ([]ConversationView, error)
+	ListConversationMessages(ctx context.Context, userID, peerID int64, in ListQuery) ([]MessageView, error)
+	MarkConversationRead(ctx context.Context, userID, peerID int64) error
+	UnreadMessageCount(ctx context.Context, userID int64) (int64, error)
 }
 
 // ---- 错误（调用方据此映射 HTTP 状态） ----
 
 var (
-	ErrNotFound    = errors.New("notify: 通知不存在")
-	ErrInvalidType = errors.New("notify: 通知类型非法")
+	ErrNotFound       = errors.New("notify: 通知不存在")
+	ErrInvalidType    = errors.New("notify: 通知类型非法")
+	ErrEmptyMessage   = errors.New("notify: 私信内容不能为空")
+	ErrSelfMessage    = errors.New("notify: 不能给自己发私信")
+	ErrMessageTooLong = errors.New("notify: 私信内容过长")
+	ErrRateLimited    = errors.New("notify: 发送过于频繁，请稍后再试")
+	ErrPeerNotFound   = errors.New("notify: 接收用户不存在")
 )
 
 // ---- 实现 ----
+
+const (
+	maxMessageLength    = 2000
+	defaultSendInterval = 1 * time.Second
+)
+
+// sendInterval 可被测试覆写。
+var sendInterval = defaultSendInterval
 
 // validTypes 通知类型白名单（与 schema CHECK 一致：#53 加 report_handled，被举报人视角的举报处理通知）。
 var validTypes = map[string]bool{
@@ -82,12 +121,14 @@ var validTypes = map[string]bool{
 }
 
 type service struct {
-	repo Repo
+	repo    Repo
+	rateMu  sync.Mutex
+	rateMap map[string]time.Time
 }
 
 // NewService 构造 Service。
 func NewService(repo Repo) Service {
-	return &service{repo: repo}
+	return &service{repo: repo, rateMap: make(map[string]time.Time)}
 }
 
 var _ Service = (*service)(nil)
@@ -148,37 +189,85 @@ func (s *service) UnreadCount(ctx context.Context, recipientID int64) (int64, er
 	return s.repo.UnreadCount(ctx, recipientID)
 }
 
-// SendMessage 发送私信（MVP 未暴露路由，能力完整供后续使用）。
-func (s *service) SendMessage(ctx context.Context, in SendMessageCmd) error {
-	return s.repo.CreateMessage(ctx, &Message{
-		FromUserID: in.FromUserID,
-		ToUserID:   in.ToUserID,
-		Content:    in.Content,
-	})
+// SendMessage 发送私信并返回落库消息。
+func (s *service) SendMessage(ctx context.Context, in SendMessageCmd) (MessageView, error) {
+	content := strings.TrimSpace(in.Content)
+	if content == "" {
+		return MessageView{}, ErrEmptyMessage
+	}
+	if in.FromUserID == in.ToUserID {
+		return MessageView{}, ErrSelfMessage
+	}
+	if utf8.RuneCountInString(content) > maxMessageLength {
+		return MessageView{}, ErrMessageTooLong
+	}
+	key := rateKey(in.FromUserID, in.ToUserID)
+	s.rateMu.Lock()
+	if last, ok := s.rateMap[key]; ok && time.Since(last) < sendInterval {
+		s.rateMu.Unlock()
+		return MessageView{}, ErrRateLimited
+	}
+	s.rateMap[key] = time.Now()
+	s.rateMu.Unlock()
+
+	m := &Message{FromUserID: in.FromUserID, ToUserID: in.ToUserID, Content: content}
+	if err := s.repo.CreateMessage(ctx, m); err != nil {
+		return MessageView{}, err
+	}
+	return toMessageView(*m), nil
 }
 
-func (s *service) MarkMessageRead(ctx context.Context, id, toUserID int64) error {
-	return s.repo.MarkMessageRead(ctx, id, toUserID)
+func rateKey(from, to int64) string {
+	return strconv.FormatInt(from, 10) + ":" + strconv.FormatInt(to, 10)
 }
 
-func (s *service) ListMessages(ctx context.Context, in ListQuery) ([]MessageView, error) {
+func toMessageView(m Message) MessageView {
+	return MessageView{
+		ID:         m.ID,
+		FromUserID: m.FromUserID,
+		ToUserID:   m.ToUserID,
+		Content:    m.Content,
+		IsRead:     m.IsRead,
+		CreatedAt:  m.CreatedAt,
+	}
+}
+
+func (s *service) ListConversations(ctx context.Context, in ListQuery) ([]ConversationView, error) {
 	offset, limit := paginate(in.Page, in.PageSize)
-	ms, err := s.repo.ListMessages(ctx, in.UserID, offset, limit)
+	cs, err := s.repo.ListConversations(ctx, in.UserID, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]ConversationView, 0, len(cs))
+	for _, c := range cs {
+		views = append(views, ConversationView{
+			PeerID:      c.PeerID,
+			LastMessage: toMessageView(c.LastMessage),
+			UnreadCount: c.UnreadCount,
+		})
+	}
+	return views, nil
+}
+
+func (s *service) ListConversationMessages(ctx context.Context, userID, peerID int64, in ListQuery) ([]MessageView, error) {
+	offset, limit := paginate(in.Page, in.PageSize)
+	ms, err := s.repo.ListConversationMessages(ctx, userID, peerID, offset, limit)
 	if err != nil {
 		return nil, err
 	}
 	views := make([]MessageView, 0, len(ms))
 	for _, m := range ms {
-		views = append(views, MessageView{
-			ID:         m.ID,
-			FromUserID: m.FromUserID,
-			ToUserID:   m.ToUserID,
-			Content:    m.Content,
-			IsRead:     m.IsRead,
-			CreatedAt:  m.CreatedAt,
-		})
+		views = append(views, toMessageView(m))
 	}
 	return views, nil
+}
+
+func (s *service) MarkConversationRead(ctx context.Context, userID, peerID int64) error {
+	return s.repo.MarkConversationRead(ctx, userID, peerID)
+}
+
+func (s *service) UnreadMessageCount(ctx context.Context, userID int64) (int64, error) {
+	return s.repo.UnreadMessageCount(ctx, userID)
 }
 
 // paginate 将 page/pageSize 归一为 offset/limit（默认 1/20，上限 100 钳制）。
