@@ -34,3 +34,10 @@ type Message struct {
 }
 
 func (Message) TableName() string { return "notify.messages" }
+
+// Conversation 是会话聚合读模型（repo 内部用，按对端分组）。
+type Conversation struct {
+	PeerID       int64
+	LastMessage  Message
+	UnreadCount  int64
+}

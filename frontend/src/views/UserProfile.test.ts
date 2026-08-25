@@ -10,8 +10,11 @@ const authState: { isLoggedIn: boolean; isAdmin: boolean; user: { id: number } |
   user: { id: 1 },
 }
 
+const push = vi.fn()
+
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: '9' }, fullPath: '/user/9' }),
+  useRouter: () => ({ push }),
 }))
 vi.mock('../router', () => ({ goLoginWithReturn: vi.fn() }))
 // 受控 van-dialog stub：渲染 default slot 并暴露 props，测试直接驱动 beforeClose。

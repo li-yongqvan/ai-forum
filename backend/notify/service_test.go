@@ -3,7 +3,9 @@ package notify
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreateNotification(t *testing.T) {
@@ -205,20 +207,178 @@ func TestNoDedup(t *testing.T) {
 	}
 }
 
-// SendMessage 能力完整（MVP 未暴露路由，仅验证 service 层可写可读）。
+// SendMessage 能力完整（MVP 未暴露 service 外部路由，仅验证 service 层可写可读）。
 func TestSendMessageAndList(t *testing.T) {
 	f := newFakeRepo()
 	svc := NewService(f)
 	ctx := context.Background()
-	if err := svc.SendMessage(ctx, SendMessageCmd{FromUserID: 2, ToUserID: 1, Content: "hi"}); err != nil {
-		t.Fatal(err)
-	}
-	ms, err := svc.ListMessages(ctx, ListQuery{UserID: 1, Page: 1, PageSize: 20})
+	view, err := svc.SendMessage(ctx, SendMessageCmd{FromUserID: 2, ToUserID: 1, Content: "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 1 || ms[0].Content != "hi" || ms[0].FromUserID != 2 {
-		t.Errorf("messages = %+v, want 1 条 hi", ms)
+	if view.Content != "hi" || view.FromUserID != 2 || view.ToUserID != 1 || view.ID == 0 {
+		t.Errorf("SendMessage view = %+v, want 1 条 hi", view)
+	}
+	count, err := svc.UnreadMessageCount(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("未读私信数 = %d, want 1", count)
+	}
+}
+
+func TestSendMessageValidation(t *testing.T) {
+	f := newFakeRepo()
+	svc := NewService(f)
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		cmd     SendMessageCmd
+		wantErr error
+	}{
+		{"empty", SendMessageCmd{FromUserID: 1, ToUserID: 2, Content: "   "}, ErrEmptyMessage},
+		{"self", SendMessageCmd{FromUserID: 1, ToUserID: 1, Content: "hi"}, ErrSelfMessage},
+		{"too long", SendMessageCmd{FromUserID: 1, ToUserID: 2, Content: strings.Repeat("a", maxMessageLength+1)}, ErrMessageTooLong},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := svc.SendMessage(ctx, c.cmd)
+			if !errors.Is(err, c.wantErr) {
+				t.Errorf("err = %v, want %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestSendMessageRateLimit(t *testing.T) {
+	old := sendInterval
+	sendInterval = 500 * time.Millisecond
+	t.Cleanup(func() { sendInterval = old })
+
+	f := newFakeRepo()
+	svc := NewService(f)
+	ctx := context.Background()
+	if _, err := svc.SendMessage(ctx, SendMessageCmd{FromUserID: 1, ToUserID: 2, Content: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendMessage(ctx, SendMessageCmd{FromUserID: 1, ToUserID: 2, Content: "b"}); !errors.Is(err, ErrRateLimited) {
+		t.Errorf("second send err = %v, want ErrRateLimited", err)
+	}
+}
+
+func TestListConversations(t *testing.T) {
+	old := sendInterval
+	sendInterval = 0
+	t.Cleanup(func() { sendInterval = old })
+
+	f := newFakeRepo()
+	svc := NewService(f)
+	ctx := context.Background()
+	// 1 与 2、3 有会话；2 与 3 的消息不应出现在 1 的列表。
+	mustSend(t, svc, ctx, 2, 1, "m1")
+	mustSend(t, svc, ctx, 3, 1, "m2")
+	mustSend(t, svc, ctx, 2, 1, "m3")
+	mustSend(t, svc, ctx, 3, 2, "other") // 不相关
+
+	cs, err := svc.ListConversations(ctx, ListQuery{UserID: 1, Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 {
+		t.Fatalf("会话数 = %d, want 2", len(cs))
+	}
+	// 新→旧：最后一条是 from=2 to=1 "m3" → peer=2 排第一
+	if cs[0].PeerID != 2 || cs[0].LastMessage.Content != "m3" || cs[0].UnreadCount != 2 {
+		t.Errorf("第一会话 = %+v, want peer=2 last=m3 unread=2", cs[0])
+	}
+	if cs[1].PeerID != 3 || cs[1].UnreadCount != 1 {
+		t.Errorf("第二会话 = %+v, want peer=3 unread=1", cs[1])
+	}
+}
+
+func TestListConversationsPagination(t *testing.T) {
+	old := sendInterval
+	sendInterval = 0
+	t.Cleanup(func() { sendInterval = old })
+
+	f := newFakeRepo()
+	svc := NewService(f)
+	ctx := context.Background()
+	mustSend(t, svc, ctx, 2, 1, "a")
+	mustSend(t, svc, ctx, 3, 1, "b")
+	mustSend(t, svc, ctx, 4, 1, "c")
+	cs, err := svc.ListConversations(ctx, ListQuery{UserID: 1, Page: 1, PageSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 {
+		t.Fatalf("第一页 = %d, want 2", len(cs))
+	}
+	cs2, err := svc.ListConversations(ctx, ListQuery{UserID: 1, Page: 2, PageSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs2) != 1 {
+		t.Errorf("第二页 = %d, want 1", len(cs2))
+	}
+}
+
+func TestListConversationMessagesScope(t *testing.T) {
+	old := sendInterval
+	sendInterval = 0
+	t.Cleanup(func() { sendInterval = old })
+
+	f := newFakeRepo()
+	svc := NewService(f)
+	ctx := context.Background()
+	mustSend(t, svc, ctx, 2, 1, "a") // 相关
+	mustSend(t, svc, ctx, 1, 2, "b") // 相关
+	mustSend(t, svc, ctx, 3, 1, "c") // 不相关（peer 3）
+
+	ms, err := svc.ListConversationMessages(ctx, 1, 2, ListQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 2 {
+		t.Fatalf("消息数 = %d, want 2", len(ms))
+	}
+	// 新→旧
+	if ms[0].Content != "b" || ms[1].Content != "a" {
+		t.Errorf("顺序 = [%s, %s], want [b, a]", ms[0].Content, ms[1].Content)
+	}
+}
+
+func TestMarkConversationRead(t *testing.T) {
+	old := sendInterval
+	sendInterval = 0
+	t.Cleanup(func() { sendInterval = old })
+
+	f := newFakeRepo()
+	svc := NewService(f)
+	ctx := context.Background()
+	mustSend(t, svc, ctx, 2, 1, "a")
+	mustSend(t, svc, ctx, 2, 1, "b")
+	mustSend(t, svc, ctx, 3, 1, "c")
+
+	if err := svc.MarkConversationRead(ctx, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	count, _ := svc.UnreadMessageCount(ctx, 1)
+	if count != 1 {
+		t.Errorf("未读数 = %d, want 1（仅 peer=3 剩余）", count)
+	}
+	// 幂等
+	if err := svc.MarkConversationRead(ctx, 1, 2); err != nil {
+		t.Errorf("重复已读 err = %v, want nil", err)
+	}
+}
+
+func mustSend(t *testing.T, svc Service, ctx context.Context, from, to int64, content string) {
+	t.Helper()
+	if _, err := svc.SendMessage(ctx, SendMessageCmd{FromUserID: from, ToUserID: to, Content: content}); err != nil {
+		t.Fatal(err)
 	}
 }
 

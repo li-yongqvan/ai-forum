@@ -3,6 +3,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gin-gonic/gin"
 	"github.com/li-yongqvan/ai-forum/backend/content"
@@ -43,6 +44,28 @@ func NewUserProvider(svc user.Service) content.UserProvider {
 	return userProviderAdapter{svc: svc}
 }
 
+// notifyPeerAdapter 使 user.Service 满足 notify.PeerProvider（组合根适配：notify 零依赖，
+// 对端画像由 user 域提供，handler 层合并）。
+type notifyPeerAdapter struct {
+	svc user.Service
+}
+
+func (a notifyPeerAdapter) GetPeerView(ctx context.Context, id int64) (notify.PeerView, error) {
+	u, err := a.svc.GetUser(ctx, id)
+	if err != nil {
+		if errors.Is(err, user.ErrNotFound) {
+			return notify.PeerView{}, notify.ErrPeerNotFound
+		}
+		return notify.PeerView{}, err
+	}
+	return notify.PeerView{ID: u.ID, Username: u.Username, Avatar: u.AvatarURL}, nil
+}
+
+// NewNotifyPeerProvider 构造 notify.PeerProvider（供 NotifyHandler 解析对端画像）。
+func NewNotifyPeerProvider(svc user.Service) notify.PeerProvider {
+	return notifyPeerAdapter{svc: svc}
+}
+
 // activeCheckerAdapter 使 user.Service 满足 middleware.ActiveChecker（#34：RequireActive 写拦截 seam）。
 type activeCheckerAdapter struct {
 	svc user.Service
@@ -70,7 +93,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 	fh := handler.NewFollowHandler(userSvc, contentSvc, notifySvc)
 	ph := handler.NewProfileHandler(userSvc, contentSvc)
 	upl := handler.NewUploadHandler(uploadSvc)
-	nh := handler.NewNotifyHandler(notifySvc)
+	nh := handler.NewNotifyHandler(notifySvc, NewNotifyPeerProvider(userSvc))
 	mh := handler.NewModerationHandler(moderationSvc, userSvc)
 
 	r.GET("/healthz", handler.Health)
@@ -109,6 +132,8 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		authed.GET("/follows", fh.ListFollows)
 		authed.GET("/notifications", nh.ListNotifications)
 		authed.GET("/notifications/unread_count", nh.UnreadCount)
+		authed.GET("/conversations", nh.ListConversations)
+		authed.GET("/conversations/:peerID/messages", nh.ListConversationMessages)
 
 		// 全部登录态写操作（#34：RequireActive 拦截被封用户，JWT 7 天内即时生效须查 DB）
 		writers := authed.Group("")
@@ -125,6 +150,8 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		writers.DELETE("/follows", fh.Unfollow)
 		writers.POST("/notifications/:id/read", nh.MarkRead)
 		writers.POST("/notifications/read-all", nh.MarkAllRead)
+		writers.POST("/messages", nh.SendMessage)
+		writers.POST("/conversations/:peerID/read", nh.MarkConversationRead)
 		writers.POST("/reports", mh.CreateReport)
 		writers.POST("/uploads", upl.Upload)
 

@@ -52,7 +52,12 @@ func viewerID(c *gin.Context) int64 {
 }
 
 func pathID(c *gin.Context) (int64, bool) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	return pathInt64(c, "id")
+}
+
+// pathInt64 解析任意路径参数名为 int64（评审 F3：复用 pathID 不再硬编码 "id"）。
+func pathInt64(c *gin.Context, name string) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param(name), 10, 64)
 	if err != nil {
 		return 0, false
 	}
