@@ -10,7 +10,9 @@ type Report struct {
 	ReporterID   int64
 	TargetType   string // user | post | comment
 	TargetID     int64  // 跨 schema 多态、无 FK
-	Reason       string
+	TargetAuthorID *int64 // #53 被举报人 id 快照（0007：CreateReport 时解析；delete 幂等后仍可定位作者发通知）
+	Reason       string // 六枚举之一（D4/O2：只存枚举，备注走 ReporterNote）
+	ReporterNote *string // 举报人备注（0006：选「其他」时必填，IA §5.6）
 	Status       string
 	HandlerID    *int64
 	HandledAt    *time.Time
@@ -34,3 +36,15 @@ type ModerationAction struct {
 }
 
 func (ModerationAction) TableName() string { return "moderation.moderation_actions" }
+
+// ModerationActionView 是审计日志只读读模型（#60）。
+type ModerationActionView struct {
+	ID               int64     `json:"id"`
+	ModeratorID      int64     `json:"moderator_id"`
+	ModeratorUsername string   `json:"moderator_username,omitempty"` // enrich（UserGateway），best-effort
+	Action           string    `json:"action"`
+	TargetType       string    `json:"target_type"`
+	TargetID         int64     `json:"target_id"`
+	Reason           string    `json:"reason"`
+	CreatedAt        time.Time `json:"created_at"`
+}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 func hashPassword(pw string) string {
@@ -218,7 +220,7 @@ func TestFollow(t *testing.T) {
 		f := newFakeRepo()
 		follower := f.seedUser("alice", "a@x.edu", "secret123")
 		target := f.seedUser("bob", "b@x.edu", "secret123")
-		f.follows[[2]int64{follower.ID, target.ID}] = true
+		f.follows[[2]int64{follower.ID, target.ID}] = time.Now()
 		svc := newService(f)
 		if err := svc.Follow(context.Background(), FollowCmd{FollowerID: follower.ID, TargetID: target.ID}); !errors.Is(err, ErrAlreadyFollow) {
 			t.Errorf("error = %v, want ErrAlreadyFollow", err)
@@ -231,7 +233,7 @@ func TestUnfollow(t *testing.T) {
 		f := newFakeRepo()
 		follower := f.seedUser("alice", "a@x.edu", "secret123")
 		target := f.seedUser("bob", "b@x.edu", "secret123")
-		f.follows[[2]int64{follower.ID, target.ID}] = true
+		f.follows[[2]int64{follower.ID, target.ID}] = time.Now()
 		svc := newService(f)
 		if err := svc.Unfollow(context.Background(), FollowCmd{FollowerID: follower.ID, TargetID: target.ID}); err != nil {
 			t.Fatalf("Unfollow() error = %v", err)
@@ -258,8 +260,8 @@ func TestFollowedUserIDs(t *testing.T) {
 	follower := f.seedUser("alice", "a@x.edu", "secret123")
 	bob := f.seedUser("bob", "b@x.edu", "secret123")
 	carol := f.seedUser("carol", "c@x.edu", "secret123")
-	f.follows[[2]int64{follower.ID, bob.ID}] = true
-	f.follows[[2]int64{follower.ID, carol.ID}] = true
+	f.follows[[2]int64{follower.ID, bob.ID}] = time.Now()
+	f.follows[[2]int64{follower.ID, carol.ID}] = time.Now()
 	svc := newService(f)
 
 	ids, err := svc.FollowedUserIDs(context.Background(), follower.ID)
@@ -275,7 +277,7 @@ func TestFollowsUser(t *testing.T) {
 	f := newFakeRepo()
 	alice := f.seedUser("alice", "a@x.edu", "secret123")
 	bob := f.seedUser("bob", "b@x.edu", "secret123")
-	f.follows[[2]int64{alice.ID, bob.ID}] = true
+	f.follows[[2]int64{alice.ID, bob.ID}] = time.Now()
 	svc := newService(f)
 
 	if ok, err := svc.FollowsUser(context.Background(), alice.ID, bob.ID); err != nil || !ok {
@@ -292,9 +294,9 @@ func TestPublicProfile(t *testing.T) {
 		alice := f.seedUser("alice", "a@x.edu", "secret123")
 		bob := f.seedUser("bob", "b@x.edu", "secret123")
 		carol := f.seedUser("carol", "c@x.edu", "secret123")
-		f.follows[[2]int64{bob.ID, alice.ID}] = true // bob 关注 alice
-		f.follows[[2]int64{carol.ID, alice.ID}] = true
-		f.follows[[2]int64{alice.ID, bob.ID}] = true // alice 关注 bob
+		f.follows[[2]int64{bob.ID, alice.ID}] = time.Now() // bob 关注 alice
+		f.follows[[2]int64{carol.ID, alice.ID}] = time.Now()
+		f.follows[[2]int64{alice.ID, bob.ID}] = time.Now() // alice 关注 bob
 		svc := newService(f)
 
 		p, err := svc.PublicProfile(context.Background(), PublicProfileCmd{TargetID: alice.ID, ViewerID: bob.ID})
@@ -337,7 +339,7 @@ func TestBan(t *testing.T) {
 		f := newFakeRepo()
 		target := f.seedUser("bob", "b@x.edu", "secret123")
 		svc := newService(f)
-		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 1, TargetID: target.ID}); err != nil {
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: target.ID}); err != nil {
 			t.Fatalf("Ban() error = %v", err)
 		}
 		u, err := f.GetUserByID(context.Background(), target.ID)
@@ -349,8 +351,105 @@ func TestBan(t *testing.T) {
 	t.Run("目标不存在", func(t *testing.T) {
 		f := newFakeRepo()
 		svc := newService(f)
-		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 1, TargetID: 999}); !errors.Is(err, ErrNotFound) {
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: 999}); !errors.Is(err, ErrNotFound) {
 			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("不能封自己", func(t *testing.T) {
+		f := newFakeRepo()
+		admin := f.seedUser("root", "r@x.edu", "secret123")
+		admin.Role = "admin"
+		svc := newService(f)
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: admin.ID, TargetID: admin.ID}); !errors.Is(err, ErrSelfBan) {
+			t.Errorf("error = %v, want ErrSelfBan", err)
+		}
+	})
+
+	t.Run("不能封 admin", func(t *testing.T) {
+		f := newFakeRepo()
+		admin := f.seedUser("root", "r@x.edu", "secret123")
+		admin.Role = "admin"
+		svc := newService(f)
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: admin.ID}); !errors.Is(err, ErrCannotBanAdmin) {
+			t.Errorf("error = %v, want ErrCannotBanAdmin", err)
+		}
+	})
+
+	t.Run("重复封禁 → ErrAlreadyBanned", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: target.ID}); err != nil {
+			t.Fatalf("首次 Ban() error = %v", err)
+		}
+		if err := svc.Ban(context.Background(), BanCmd{OperatorID: 9999, TargetID: target.ID}); !errors.Is(err, ErrAlreadyBanned) {
+			t.Errorf("重复 Ban error = %v, want ErrAlreadyBanned", err)
+		}
+	})
+}
+
+func TestUnban(t *testing.T) {
+	t.Run("成功", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		target.Status = "banned"
+		svc := newService(f)
+		if err := svc.Unban(context.Background(), UnbanCmd{OperatorID: 1, TargetID: target.ID}); err != nil {
+			t.Fatalf("Unban() error = %v", err)
+		}
+		u, err := f.GetUserByID(context.Background(), target.ID)
+		if err != nil || u.Status != "active" {
+			t.Errorf("解封后 status = %q, err = %v", u.Status, err)
+		}
+	})
+
+	t.Run("目标不存在", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		if err := svc.Unban(context.Background(), UnbanCmd{OperatorID: 1, TargetID: 999}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("未封禁 → ErrNotBanned", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		if err := svc.Unban(context.Background(), UnbanCmd{OperatorID: 1, TargetID: target.ID}); !errors.Is(err, ErrNotBanned) {
+			t.Errorf("error = %v, want ErrNotBanned", err)
+		}
+	})
+}
+
+func TestIsActive(t *testing.T) {
+	t.Run("active → true", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		svc := newService(f)
+		active, err := svc.IsActive(context.Background(), target.ID)
+		if err != nil || !active {
+			t.Errorf("IsActive = %v, err = %v, want true", active, err)
+		}
+	})
+
+	t.Run("banned → false", func(t *testing.T) {
+		f := newFakeRepo()
+		target := f.seedUser("bob", "b@x.edu", "secret123")
+		target.Status = "banned"
+		svc := newService(f)
+		active, err := svc.IsActive(context.Background(), target.ID)
+		if err != nil || active {
+			t.Errorf("IsActive = %v, err = %v, want false", active, err)
+		}
+	})
+
+	t.Run("软删/不存在 → false", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		active, err := svc.IsActive(context.Background(), 999)
+		if err != nil || active {
+			t.Errorf("IsActive = %v, err = %v, want false", active, err)
 		}
 	})
 }
@@ -375,6 +474,100 @@ func TestGetUser(t *testing.T) {
 		_, err := svc.GetUser(context.Background(), 123)
 		if !errors.Is(err, ErrNotFound) {
 			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// ---- 我的关注用户列表（#23） ----
+
+func TestListFollowedUsers(t *testing.T) {
+	base := time.Now().Add(-48 * time.Hour)
+
+	t.Run("按关注时间倒序 + viewer.following=true + 画像字段", func(t *testing.T) {
+		f := newFakeRepo()
+		alice := f.seedUser("alice", "a@x.edu", "secret123")
+		bob := f.seedUser("bob", "b@x.edu", "secret123")
+		carol := f.seedUser("carol", "c@x.edu", "secret123")
+		avatar := "https://img/avatar.png"
+		bio := "爱写代码"
+		bob.AvatarURL = &avatar
+		bob.Bio = &bio
+		f.seedFollow(alice.ID, bob.ID, base)
+		f.seedFollow(alice.ID, carol.ID, base.Add(1*time.Hour))
+		svc := newService(f)
+
+		views, err := svc.ListFollowedUsers(context.Background(), ListFollowedUsersQuery{ViewerID: alice.ID, PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFollowedUsers() error = %v", err)
+		}
+		if len(views) != 2 || views[0].Username != "carol" || views[1].Username != "bob" {
+			t.Errorf("排序 = %d 条, want [carol bob]（关注时间倒序）", len(views))
+		}
+		if views[1].AvatarURL == nil || *views[1].AvatarURL != avatar || views[1].Bio == nil || *views[1].Bio != bio {
+			t.Errorf("画像字段缺失: %+v", views[1])
+		}
+		for _, v := range views {
+			if v.Viewer == nil || !v.Viewer.Following {
+				t.Errorf("viewer.following 应为 true, got %+v", v.Viewer)
+			}
+		}
+	})
+
+	t.Run("游客 → ErrAuthRequired", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		if _, err := svc.ListFollowedUsers(context.Background(), ListFollowedUsersQuery{ViewerID: 0}); !errors.Is(err, ErrAuthRequired) {
+			t.Errorf("error = %v, want ErrAuthRequired", err)
+		}
+	})
+
+	t.Run("分页", func(t *testing.T) {
+		f := newFakeRepo()
+		alice := f.seedUser("alice", "a@x.edu", "secret123")
+		bob := f.seedUser("bob", "b@x.edu", "secret123")
+		carol := f.seedUser("carol", "c@x.edu", "secret123")
+		f.seedFollow(alice.ID, bob.ID, base)
+		f.seedFollow(alice.ID, carol.ID, base.Add(1*time.Hour))
+		svc := newService(f)
+
+		views, err := svc.ListFollowedUsers(context.Background(), ListFollowedUsersQuery{ViewerID: alice.ID, Page: 2, PageSize: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].Username != "bob" {
+			t.Errorf("第2页 = %d 条, want [bob]", len(views))
+		}
+	})
+
+	t.Run("空 → 非 nil 空切片", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedUser("alice", "a@x.edu", "secret123")
+		svc := newService(f)
+		views, err := svc.ListFollowedUsers(context.Background(), ListFollowedUsersQuery{ViewerID: 1, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if views == nil || len(views) != 0 {
+			t.Errorf("空关注 views = %#v, want 非 nil 空切片", views)
+		}
+	})
+
+	t.Run("软删用户不出现在关注列表", func(t *testing.T) {
+		f := newFakeRepo()
+		alice := f.seedUser("alice", "a@x.edu", "secret123")
+		bob := f.seedUser("bob", "b@x.edu", "secret123")
+		carol := f.seedUser("carol", "c@x.edu", "secret123")
+		f.seedFollow(alice.ID, bob.ID, base)
+		f.seedFollow(alice.ID, carol.ID, base.Add(1*time.Hour))
+		bob.DeletedAt = gorm.DeletedAt{Valid: true}
+		svc := newService(f)
+
+		views, err := svc.ListFollowedUsers(context.Background(), ListFollowedUsersQuery{ViewerID: alice.ID, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].Username != "carol" {
+			t.Errorf("软删后关注用户 = %d 条, want 仅 [carol]", len(views))
 		}
 	})
 }

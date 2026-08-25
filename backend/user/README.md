@@ -13,6 +13,10 @@
 - **密码存储**：仅存 bcrypt hash，永不存明文、永不返回 hash。
 - **角色映射（一致性修正，计划已记录）**：DB 存 `member/moderator/admin`；`Service` 返回与 JWT 载荷均为对外取值 `user/moderator/admin`（`member→user` 由本包在边界映射）。`guest` 仅前端状态，永不入库、不入 token。
 - **软删**：users 永不硬删（`deleted_at`）；逻辑外键永不因删除失联。
+- **封禁/解封（#34）**：状态存 `status`（active|banned，零迁移）；`Ban` 条件更新 `active→banned`、`Unban` 条件更新 `banned→active`（RowsAffected=0 → `ErrAlreadyBanned`/`ErrNotBanned`，**幂等防重复审计**）；**不能封自己、不能封 admin**；审计由 handler 层调用 `moderation.RecordAction` 追加（本包不写审计表）。
+- **写拦截（#34）**：`IsActive(userID)` 返回用户是否可执行写操作（存在且非 banned；软删/不存在 → false，fail-closed），供写拦截中间件 `RequireActive` 查 DB 即时生效（JWT claims 最长 7 天，封禁须即时阻断）。
+- **`PublicProfileView.Banned`（#34）**：服务层恒算（`status=="banned"`）；序列化门控在 handler（仅 admin/self 可见，治理信息不外泄）。
+- **我的关注用户列表（#23）**：`ListFollowedUsers` 按关注时间倒序 + 分页，需登录（游客 `ErrAuthRequired`）；行模型 `UserFollowView` 仅暴露最小画像字段（username/avatar_url/bio + `viewer.following`），不泄 Email/Role、不带多余计数。
 
 ## 调用顺序约束（Ordering）
 
@@ -31,6 +35,10 @@
 | `ErrBanned` | 账号被封禁 | 401（保持统一，不泄露账号状态） |
 | `ErrNotFound` | 目标用户不存在 | 404 |
 | `ErrSelfFollow` / `ErrAlreadyFollow` | 关注非法 | 400 / 409 |
+| `ErrAuthRequired` | 我的关注用户列表游客（#23） | 401 |
+| `ErrSelfBan` / `ErrCannotBanAdmin` | 封禁守卫（不能封自己/封管理员，#34） | 400 |
+| `ErrAlreadyBanned` | 重复封禁（#34 幂等） | 409 |
+| `ErrNotBanned` | 解封未封用户（#34 幂等） | 409 |
 
 除上述哨兵外，其余 error 均为基础设施故障（DB 等），调用方应记录日志并按 500 处理。
 

@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func ctx() context.Context { return context.Background() }
@@ -60,6 +63,89 @@ func TestCreatePost(t *testing.T) {
 		_, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "  ", Content: "c"})
 		if !errors.Is(err, ErrContentEmpty) {
 			t.Errorf("error = %v, want ErrContentEmpty", err)
+		}
+	})
+}
+
+func TestCreatePostStoresTags(t *testing.T) {
+	t.Run("成功提取并落库", func(t *testing.T) {
+		f, svc := newContentService()
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "今天学习 #AI 和 #RAG"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if !reflect.DeepEqual(view.Tags, []string{"ai", "rag"}) {
+			t.Errorf("view.Tags = %v, want [ai rag]", view.Tags)
+		}
+		if !reflect.DeepEqual(f.tagPosts[view.ID], []string{"ai", "rag"}) {
+			t.Errorf("fake tagPosts = %v, want [ai rag]", f.tagPosts[view.ID])
+		}
+	})
+
+	t.Run("无标签则 Tags 缺省", func(t *testing.T) {
+		_, svc := newContentService()
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "普通内容"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if view.Tags != nil {
+			t.Errorf("view.Tags = %v, want nil", view.Tags)
+		}
+	})
+}
+
+func TestCreatePostTagWriteFailure(t *testing.T) {
+	// 标签写失败不阻断发帖（评审 §6.4 log-and-continue）
+	f, svc := newContentService()
+	f.errReplaceTags = errors.New("fake: tag db down")
+	view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "#AI"})
+	if err != nil {
+		t.Fatalf("CreatePost() error = %v, want nil（标签写失败不阻断发帖）", err)
+	}
+	if view.ID == 0 {
+		t.Errorf("view.ID = 0, want 帖子已创建")
+	}
+}
+
+func TestListFeedByTag(t *testing.T) {
+	f, svc := newContentService()
+	// 帖子 1 置顶带 ai；帖子 2 普通带 ai；帖子 3 带 rag；帖子 4 软删带 ai（应排除）
+	f.seedPost(1, 1, 1, withPinned(true), withCreatedAt(time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)))
+	f.seedPost(2, 2, 1, withCreatedAt(time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)))
+	f.seedPost(3, 1, 1, withCreatedAt(time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)))
+	f.seedPost(4, 2, 1, withCreatedAt(time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)))
+	f.seedPostTags(1, "AI")
+	f.seedPostTags(2, "ai")
+	f.seedPostTags(3, "rag")
+	f.seedPostTags(4, "AI")
+	if err := f.DeletePost(ctx(), 4); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "AI" // 大小写不敏感：查询归一化小写
+	views, err := svc.ListFeed(ctx(), ListFeedQuery{Tag: &tag, Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListFeed() error = %v", err)
+	}
+	if len(views) != 2 {
+		t.Fatalf("len(views) = %d, want 2（软删帖排除）", len(views))
+	}
+	// 置顶优先 + 时间倒序：帖子 1（置顶）→ 帖子 2
+	if views[0].ID != 1 || views[1].ID != 2 {
+		t.Errorf("views ids = [%d %d], want [1 2]", views[0].ID, views[1].ID)
+	}
+	if !reflect.DeepEqual(views[0].Tags, []string{"ai"}) {
+		t.Errorf("views[0].Tags = %v, want [ai]", views[0].Tags)
+	}
+
+	t.Run("不存在的标签返回空（非 nil）", func(t *testing.T) {
+		none := "nonexistent"
+		vs, err := svc.ListFeed(ctx(), ListFeedQuery{Tag: &none, Page: 1, PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFeed() error = %v", err)
+		}
+		if len(vs) != 0 || vs == nil {
+			t.Errorf("vs = %#v, want 空非 nil 列表契约", vs)
 		}
 	})
 }
@@ -533,4 +619,319 @@ func TestCountPostsByAuthor(t *testing.T) {
 	if err != nil || n2 != 0 {
 		t.Errorf("不存在的作者帖子数 = %d, err=%v, want 0", n2, err)
 	}
+}
+
+// ---- 收藏/关注列表（#23） ----
+
+func TestListFavorites(t *testing.T) {
+	base := time.Now().Add(-48 * time.Hour)
+
+	t.Run("按收藏时间倒序 + viewer.favorited=true", func(t *testing.T) {
+		f, svc := newContentService()
+		f.seedPost(1, 1, 1)
+		f.seedPost(2, 2, 1)
+		f.seedPost(3, 3, 1)
+		f.seedFavorite(5, 1, base)
+		f.seedFavorite(5, 2, base.Add(1*time.Hour))
+		f.seedFavorite(5, 3, base.Add(2*time.Hour))
+
+		views, err := svc.ListFavorites(ctx(), ListFavoritesQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFavorites() error = %v", err)
+		}
+		if len(views) != 3 || views[0].ID != 3 || views[1].ID != 2 || views[2].ID != 1 {
+			t.Errorf("排序 = %d 条, want [3 2 1]（收藏时间倒序）", len(views))
+		}
+		for _, v := range views {
+			if v.Viewer == nil || !v.Viewer.Favorited {
+				t.Errorf("viewer.favorited 应为 true, got %+v", v.Viewer)
+			}
+		}
+	})
+
+	t.Run("游客 → ErrAuthRequired", func(t *testing.T) {
+		_, svc := newContentService()
+		if _, err := svc.ListFavorites(ctx(), ListFavoritesQuery{ViewerID: 0}); !errors.Is(err, ErrAuthRequired) {
+			t.Errorf("error = %v, want ErrAuthRequired", err)
+		}
+	})
+
+	t.Run("分页", func(t *testing.T) {
+		f, svc := newContentService()
+		f.seedPost(1, 1, 1)
+		f.seedPost(2, 2, 1)
+		f.seedPost(3, 3, 1)
+		f.seedFavorite(5, 1, base)
+		f.seedFavorite(5, 2, base.Add(1*time.Hour))
+		f.seedFavorite(5, 3, base.Add(2*time.Hour))
+
+		views, err := svc.ListFavorites(ctx(), ListFavoritesQuery{ViewerID: 5, Page: 3, PageSize: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 1 {
+			t.Errorf("第3页 = %d 条, want [1]（最旧收藏）", len(views))
+		}
+	})
+
+	t.Run("空 → 非 nil 空切片", func(t *testing.T) {
+		f, svc := newContentService()
+		f.seedPost(1, 1, 1)
+		views, err := svc.ListFavorites(ctx(), ListFavoritesQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if views == nil || len(views) != 0 {
+			t.Errorf("空收藏 views = %#v, want 非 nil 空切片（信封契约 items:[]）", views)
+		}
+	})
+
+	t.Run("软删帖子不出现在收藏列表", func(t *testing.T) {
+		f, svc := newContentService()
+		f.seedPost(1, 1, 1)
+		f.seedPost(2, 2, 1)
+		f.seedFavorite(5, 1, base)
+		f.seedFavorite(5, 2, base.Add(1*time.Hour))
+		_ = f.DeletePost(ctx(), 1)
+
+		views, err := svc.ListFavorites(ctx(), ListFavoritesQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 2 {
+			t.Errorf("软删后收藏列表 = %d 条, want 仅 [2]", len(views))
+		}
+	})
+}
+
+func TestListFollowedBoards(t *testing.T) {
+	t.Run("按关注时间倒序 + viewer.following=true", func(t *testing.T) {
+		_, svc := newContentService()
+		if err := svc.FollowBoard(ctx(), FollowBoardCmd{FollowerID: 5, BoardID: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.FollowBoard(ctx(), FollowBoardCmd{FollowerID: 5, BoardID: 2}); err != nil {
+			t.Fatal(err)
+		}
+
+		views, err := svc.ListFollowedBoards(ctx(), ListFollowedBoardsQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFollowedBoards() error = %v", err)
+		}
+		if len(views) != 2 || views[0].ID != 2 || views[1].ID != 1 {
+			t.Errorf("排序 = %d 条, want [2 1]（关注时间倒序）", len(views))
+		}
+		for _, v := range views {
+			if v.Viewer == nil || !v.Viewer.Following {
+				t.Errorf("viewer.following 应为 true, got %+v", v.Viewer)
+			}
+		}
+	})
+
+	t.Run("游客 → ErrAuthRequired", func(t *testing.T) {
+		_, svc := newContentService()
+		if _, err := svc.ListFollowedBoards(ctx(), ListFollowedBoardsQuery{ViewerID: 0}); !errors.Is(err, ErrAuthRequired) {
+			t.Errorf("error = %v, want ErrAuthRequired", err)
+		}
+	})
+
+	t.Run("分页", func(t *testing.T) {
+		f, svc := newContentService()
+		_ = f.CreateFollowBoard(ctx(), &FollowBoard{FollowerID: 5, BoardID: 1})
+		_ = f.CreateFollowBoard(ctx(), &FollowBoard{FollowerID: 5, BoardID: 2})
+		views, err := svc.ListFollowedBoards(ctx(), ListFollowedBoardsQuery{ViewerID: 5, Page: 2, PageSize: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 1 {
+			t.Errorf("第2页 = %d 条, want [1]", len(views))
+		}
+	})
+
+	t.Run("空 → 非 nil 空切片", func(t *testing.T) {
+		_, svc := newContentService()
+		views, err := svc.ListFollowedBoards(ctx(), ListFollowedBoardsQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if views == nil || len(views) != 0 {
+			t.Errorf("空关注 views = %#v, want 非 nil 空切片", views)
+		}
+	})
+
+	t.Run("软删板块不出现在关注列表", func(t *testing.T) {
+		f, svc := newContentService()
+		_ = f.CreateFollowBoard(ctx(), &FollowBoard{FollowerID: 5, BoardID: 1})
+		_ = f.CreateFollowBoard(ctx(), &FollowBoard{FollowerID: 5, BoardID: 2})
+		f.boards[1].DeletedAt = gorm.DeletedAt{Valid: true}
+
+		views, err := svc.ListFollowedBoards(ctx(), ListFollowedBoardsQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 2 {
+			t.Errorf("软删后关注板块 = %d 条, want 仅 [2]", len(views))
+		}
+	})
+}
+
+func TestListFollowedTopics(t *testing.T) {
+	t.Run("按关注时间倒序 + viewer.following=true", func(t *testing.T) {
+		_, svc := newContentService()
+		if err := svc.FollowTopic(ctx(), FollowTopicCmd{FollowerID: 5, TopicID: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.FollowTopic(ctx(), FollowTopicCmd{FollowerID: 5, TopicID: 2}); err != nil {
+			t.Fatal(err)
+		}
+
+		views, err := svc.ListFollowedTopics(ctx(), ListFollowedTopicsQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFollowedTopics() error = %v", err)
+		}
+		if len(views) != 2 || views[0].ID != 2 || views[1].ID != 1 {
+			t.Errorf("排序 = %d 条, want [2 1]（关注时间倒序）", len(views))
+		}
+		for _, v := range views {
+			if v.Viewer == nil || !v.Viewer.Following {
+				t.Errorf("viewer.following 应为 true, got %+v", v.Viewer)
+			}
+			if v.BoardID == 0 {
+				t.Errorf("topic 应带 board_id, got %+v", v)
+			}
+		}
+	})
+
+	t.Run("游客 → ErrAuthRequired", func(t *testing.T) {
+		_, svc := newContentService()
+		if _, err := svc.ListFollowedTopics(ctx(), ListFollowedTopicsQuery{ViewerID: 0}); !errors.Is(err, ErrAuthRequired) {
+			t.Errorf("error = %v, want ErrAuthRequired", err)
+		}
+	})
+
+	t.Run("空 → 非 nil 空切片", func(t *testing.T) {
+		_, svc := newContentService()
+		views, err := svc.ListFollowedTopics(ctx(), ListFollowedTopicsQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if views == nil || len(views) != 0 {
+			t.Errorf("空关注 views = %#v, want 非 nil 空切片", views)
+		}
+	})
+
+	t.Run("软删话题不出现在关注列表", func(t *testing.T) {
+		f, svc := newContentService()
+		_ = f.CreateFollowTopic(ctx(), &FollowTopic{FollowerID: 5, TopicID: 1})
+		_ = f.CreateFollowTopic(ctx(), &FollowTopic{FollowerID: 5, TopicID: 2})
+		f.topics[1].DeletedAt = gorm.DeletedAt{Valid: true}
+
+		views, err := svc.ListFollowedTopics(ctx(), ListFollowedTopicsQuery{ViewerID: 5, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 2 {
+			t.Errorf("软删后关注话题 = %d 条, want 仅 [2]", len(views))
+		}
+	})
+}
+
+func TestListFeed_Hot(t *testing.T) {
+	base := time.Now()
+	f, svc := newContentService()
+
+	// p1: 1 赞 = 1 分
+	f.seedPost(1, 1, 1, withCreatedAt(base.Add(-1*time.Hour)))
+	_ = f.CreateLike(ctx(), &Like{UserID: 10, TargetType: "post", TargetID: 1})
+
+	// p2: 3 评论 = 9 分（验证 评论×3 权重 > 赞）
+	f.seedPost(2, 1, 1, withCreatedAt(base.Add(-2*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 2, AuthorID: 10, Content: "a"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 2, AuthorID: 11, Content: "b"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 2, AuthorID: 12, Content: "c"})
+
+	// p3: 窗口内置顶但 0 互动，验证置顶恒顶
+	f.seedPost(3, 1, 1, withPinned(true), withCreatedAt(base.Add(-3*time.Hour)))
+
+	// p4: 超窗帖子，应被剔除
+	f.seedPost(4, 1, 1, withCreatedAt(base.Add(-8*24*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 4, AuthorID: 10, Content: "old"})
+
+	// p5: 超窗置顶帖，验证置顶不豁免窗口（F2 方案 A）
+	f.seedPost(5, 1, 1, withPinned(true), withCreatedAt(base.Add(-10*24*time.Hour)))
+	_ = f.CreateLike(ctx(), &Like{UserID: 10, TargetType: "post", TargetID: 5})
+
+	// p6/p7: 同分（2 评论=6 分），验证 created_at 兜底（新帖在前）
+	f.seedPost(6, 1, 1, withCreatedAt(base.Add(-5*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 6, AuthorID: 10, Content: "x"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 6, AuthorID: 11, Content: "y"})
+	f.seedPost(7, 1, 1, withCreatedAt(base.Add(-4*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 7, AuthorID: 10, Content: "x"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 7, AuthorID: 11, Content: "y"})
+
+	// p8: 带 #ai 标签，用于 hot+tag 叠加测试
+	f.seedPost(8, 1, 1, withCreatedAt(base.Add(-6*time.Hour)))
+	_ = f.CreateLike(ctx(), &Like{UserID: 10, TargetType: "post", TargetID: 8})
+	f.tagPosts[8] = []string{"ai"}
+
+	t.Run("权重排序 + 置顶恒顶", func(t *testing.T) {
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFeed(hot) error = %v", err)
+		}
+		// 期望顺序：p3(置顶) > p2(9分) > p7(同分新) > p6(同分旧) > p1(1分) > p8(1分更旧)
+		want := []int64{3, 2, 7, 6, 1, 8}
+		got := make([]int64, len(views))
+		for i, v := range views {
+			got[i] = v.ID
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("排序 = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("7 天窗口外帖子剔除（含超窗置顶）", func(t *testing.T) {
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range views {
+			if v.ID == 4 || v.ID == 5 {
+				t.Errorf("超窗帖 %d 不应出现在热门段", v.ID)
+			}
+		}
+	})
+
+	t.Run("分页", func(t *testing.T) {
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", Page: 2, PageSize: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []int64{7, 6}
+		got := make([]int64, len(views))
+		for i, v := range views {
+			got[i] = v.ID
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("第2页 = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("游客可访问", func(t *testing.T) {
+		_, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", ViewerID: 0, PageSize: 20})
+		if err != nil {
+			t.Errorf("游客访问 hot 报错 = %v, want nil", err)
+		}
+	})
+
+	t.Run("hot + tag 过滤叠加", func(t *testing.T) {
+		tag := "ai"
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", Tag: &tag, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 8 {
+			t.Errorf("hot+ai = %+v, want [8]", views)
+		}
+	})
 }

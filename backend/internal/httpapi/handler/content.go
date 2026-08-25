@@ -52,7 +52,12 @@ func viewerID(c *gin.Context) int64 {
 }
 
 func pathID(c *gin.Context) (int64, bool) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	return pathInt64(c, "id")
+}
+
+// pathInt64 解析任意路径参数名为 int64（评审 F3：复用 pathID 不再硬编码 "id"）。
+func pathInt64(c *gin.Context, name string) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param(name), 10, 64)
 	if err != nil {
 		return 0, false
 	}
@@ -116,6 +121,10 @@ func (h *ContentHandler) ListPosts(c *gin.Context) {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			q.TopicID = &id
 		}
+	}
+	if v := c.Query("tag"); v != "" {
+		// #54 标签过滤：归一化/空值处理由 service seam 层兜底（评审 §5.1-7，避免双处策略）
+		q.Tag = &v
 	}
 	views, err := h.svc.ListFeed(c.Request.Context(), q)
 	if err != nil {
@@ -381,4 +390,23 @@ func (h *ContentHandler) Unfavorite(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+// ListFavorites GET /api/v1/favorites（需登录；我收藏的帖子，按收藏时间倒序，#23）
+func (h *ContentHandler) ListFavorites(c *gin.Context) {
+	claims, ok := middleware.Identity(c)
+	if !ok {
+		respondError(c, http.StatusUnauthorized, "需要登录")
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	views, err := h.svc.ListFavorites(c.Request.Context(), content.ListFavoritesQuery{
+		ViewerID: claims.UserID, Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		respondContentError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
 }

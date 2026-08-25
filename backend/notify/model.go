@@ -8,7 +8,7 @@ import "time"
 type Notification struct {
 	ID          int64 `gorm:"primaryKey"`
 	RecipientID int64
-	Type        string // follow | like | comment | reply | report_result
+	Type        string // follow | like | comment | reply | report_result | report_handled
 	ActorID     *int64 // 仅客户端跳转，永不 join
 	ActorName   *string
 	ActorAvatar *string
@@ -34,3 +34,10 @@ type Message struct {
 }
 
 func (Message) TableName() string { return "notify.messages" }
+
+// Conversation 是会话聚合读模型（repo 内部用，按对端分组）。
+type Conversation struct {
+	PeerID       int64
+	LastMessage  Message
+	UnreadCount  int64
+}

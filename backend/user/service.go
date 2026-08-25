@@ -31,8 +31,14 @@ type FollowCmd struct {
 	TargetID   int64
 }
 
-// BanCmd 封禁命令。审计由 moderation 包负责（scaffold 阶段 moderation 未实现）。
+// BanCmd 封禁命令。审计由 moderation 包负责（handler 层调用 moderation.RecordAction，#34）。
 type BanCmd struct {
+	OperatorID int64
+	TargetID   int64
+}
+
+// UnbanCmd 解封命令（#34）。审计由 moderation 包负责。
+type UnbanCmd struct {
 	OperatorID int64
 	TargetID   int64
 }
@@ -55,15 +61,20 @@ type AuthResult struct {
 // ---- 错误（调用方据此映射 HTTP 状态） ----
 
 var (
-	ErrUsernameTaken = errors.New("user: 用户名已存在")
-	ErrEmailTaken    = errors.New("user: 邮箱已存在")
-	ErrInvalidInvite = errors.New("user: 邀请码无效或已使用")
-	ErrWeakPassword  = errors.New("user: 密码至少 8 位")
-	ErrBadCredential = errors.New("user: 用户名或密码错误")
-	ErrBanned        = errors.New("user: 账号已被封禁")
-	ErrNotFound      = errors.New("user: 目标不存在")
-	ErrSelfFollow    = errors.New("user: 不能关注自己")
-	ErrAlreadyFollow = errors.New("user: 已关注该用户")
+	ErrUsernameTaken  = errors.New("user: 用户名已存在")
+	ErrEmailTaken     = errors.New("user: 邮箱已存在")
+	ErrInvalidInvite  = errors.New("user: 邀请码无效或已使用")
+	ErrWeakPassword   = errors.New("user: 密码至少 8 位")
+	ErrBadCredential  = errors.New("user: 用户名或密码错误")
+	ErrBanned         = errors.New("user: 账号已被封禁")
+	ErrNotFound       = errors.New("user: 目标不存在")
+	ErrSelfFollow     = errors.New("user: 不能关注自己")
+	ErrAlreadyFollow  = errors.New("user: 已关注该用户")
+	ErrAuthRequired   = errors.New("user: 需要登录") // #23 收藏/关注列表游客
+	ErrSelfBan        = errors.New("user: 不能封禁自己")
+	ErrCannotBanAdmin = errors.New("user: 不能封禁管理员")
+	ErrAlreadyBanned  = errors.New("user: 该用户已被封禁")
+	ErrNotBanned      = errors.New("user: 该用户未被封禁")
 )
 
 // ---- Service 接口（粗粒度命令 + 读模型查询，#4/#7） ----
@@ -80,6 +91,10 @@ type Service interface {
 	Follow(ctx context.Context, in FollowCmd) error
 	Unfollow(ctx context.Context, in FollowCmd) error
 	Ban(ctx context.Context, in BanCmd) error
+	// Unban 解封用户（#34）。幂等：未封则 ErrNotBanned。
+	Unban(ctx context.Context, in UnbanCmd) error
+	// IsActive 返回用户是否可执行写操作（存在且未被封禁；软删/不存在视为不活跃，供写拦截中间件）。
+	IsActive(ctx context.Context, userID int64) (bool, error)
 	GetUser(ctx context.Context, id int64) (UserView, error)
 	// FollowedUserIDs 返回某用户关注的用户 id 列表（供 content 构造关注流，#4 进程内调用）。
 	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
@@ -87,6 +102,8 @@ type Service interface {
 	FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error)
 	// PublicProfile 返回用户公开资料（不含邮箱/角色等隐私字段）。
 	PublicProfile(ctx context.Context, in PublicProfileCmd) (PublicProfileView, error)
+	// ListFollowedUsers 返回我关注的用户，按关注时间倒序 + 分页（#23，需登录）。
+	ListFollowedUsers(ctx context.Context, in ListFollowedUsersQuery) ([]UserFollowView, error)
 }
 
 // PublicProfileCmd 公开资料查询。
@@ -105,6 +122,29 @@ type PublicProfileView struct {
 	Following      bool
 	FollowerCount  int
 	FollowingCount int
+	Banned         bool // #34：当前是否被封禁（可见性门控在 handler：仅 admin/self 序列化）
+}
+
+// ListFollowedUsersQuery 我关注的用户列表（#23）。
+type ListFollowedUsersQuery struct {
+	ViewerID int64 // 0 = 游客
+	Page     int
+	PageSize int
+}
+
+// UserFollowView 关注列表的用户行（最小画像字段；刻意不复用 UserView/PublicProfileView——
+// UserView 含 Email/Role 不可外泄，PublicProfileView 带多余计数）。
+type UserFollowView struct {
+	ID        int64             `json:"id"`
+	Username  string            `json:"username"`
+	AvatarURL *string           `json:"avatar_url"`
+	Bio       *string           `json:"bio"`
+	Viewer    *UserFollowViewer `json:"viewer,omitempty"`
+}
+
+// UserFollowViewer 关注行的登录态（恒 true：列表即"我关注的"）。
+type UserFollowViewer struct {
+	Following bool `json:"following"`
 }
 
 // ---- 实现 ----
@@ -252,6 +292,7 @@ func (s *service) PublicProfile(ctx context.Context, in PublicProfileCmd) (Publi
 		CreatedAt:      u.CreatedAt,
 		FollowerCount:  followers,
 		FollowingCount: following,
+		Banned:         u.Status == "banned",
 	}
 	if in.ViewerID != 0 {
 		f, err := s.repo.FollowExists(ctx, in.ViewerID, in.TargetID)
@@ -263,12 +304,79 @@ func (s *service) PublicProfile(ctx context.Context, in PublicProfileCmd) (Publi
 	return v, nil
 }
 
-// Ban 封禁用户。审计动作（moderation_actions）由 moderation 包在治理闭环中追加。
-func (s *service) Ban(ctx context.Context, in BanCmd) error {
-	if _, err := s.repo.GetUserByID(ctx, in.TargetID); err != nil {
-		return ErrNotFound
+// normalizePage 统一分页归一化（与 content 包各持一份，包间不共享工具函数：#4 深模块）。
+func normalizePage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
 	}
-	return s.repo.UpdateUserStatus(ctx, in.TargetID, "banned")
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+// ListFollowedUsers 返回我关注的用户，按关注时间倒序 + 分页（#23）。
+func (s *service) ListFollowedUsers(ctx context.Context, in ListFollowedUsersQuery) ([]UserFollowView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	us, err := s.repo.ListFollowedUsers(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	// make([]T,0,n)：空结果序列化为 "items":[] 而非 null（信封契约，评审 D2）
+	views := make([]UserFollowView, 0, len(us))
+	for _, u := range us {
+		views = append(views, UserFollowView{
+			ID:        u.ID,
+			Username:  u.Username,
+			AvatarURL: u.AvatarURL,
+			Bio:       u.Bio,
+			Viewer:    &UserFollowViewer{Following: true},
+		})
+	}
+	return views, nil
+}
+
+// Ban 封禁用户（#34：存在性 → 自封防护 → 封 admin 防护 → 条件更新 active→banned）。
+// 幂等：已封则 ErrAlreadyBanned（条件更新 RowsAffected=0 哨兵），不写审计、不产生重复审计。
+// 审计动作（moderation_actions）由 handler 层调用 moderation.RecordAction 追加（状态先改、审计后写，§6.1）。
+func (s *service) Ban(ctx context.Context, in BanCmd) error {
+	target, err := s.repo.GetUserByID(ctx, in.TargetID)
+	if err != nil {
+		return err
+	}
+	if in.TargetID == in.OperatorID {
+		return ErrSelfBan
+	}
+	if target.Role == "admin" {
+		return ErrCannotBanAdmin
+	}
+	return s.repo.SetBanned(ctx, in.TargetID)
+}
+
+// Unban 解封用户（#34）：存在性 → 条件更新 banned→active；未封则 ErrNotBanned（幂等防重复审计）。
+func (s *service) Unban(ctx context.Context, in UnbanCmd) error {
+	if _, err := s.repo.GetUserByID(ctx, in.TargetID); err != nil {
+		return err
+	}
+	return s.repo.SetActive(ctx, in.TargetID)
+}
+
+// IsActive 返回用户是否可执行写操作（存在且 status != banned）；软删/不存在视为不活跃（#34 fail-closed）。
+func (s *service) IsActive(ctx context.Context, userID int64) (bool, error) {
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil // 软删/不存在 → 拦截（安全）
+		}
+		return false, err
+	}
+	return u.Status != "banned", nil
 }
 
 // GetUser 按 id 返回用户读模型。

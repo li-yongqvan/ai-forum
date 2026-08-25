@@ -43,7 +43,7 @@ func (h *UploadHandler) Upload(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	rel, err := h.svc.Store(f.Filename, src)
 	if err != nil {

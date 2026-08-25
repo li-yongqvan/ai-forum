@@ -1,10 +1,13 @@
 package handler_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/li-yongqvan/ai-forum/backend/internal/testutil"
@@ -21,6 +24,7 @@ type postView struct {
 	LikeCount     int     `json:"like_count"`
 	CommentCount  int     `json:"comment_count"`
 	FavoriteCount int     `json:"favorite_count"`
+	Tags          []string `json:"tags"`
 	Viewer        *struct {
 		Liked           bool `json:"liked"`
 		Favorited       bool `json:"favorited"`
@@ -256,6 +260,91 @@ func TestContentFlow(t *testing.T) {
 	}
 }
 
+// TestTagsFlow #54 标签端到端：发带 # 帖 → tags 落库返回 → 按 tag 聚合（游客可读）→ 大小写不敏感 → 空 tag 不过滤 → 删帖剔除。
+func TestTagsFlow(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-C1")
+	token := alice.Token
+
+	// 发帖：正文带 #RAG 和 #Agent（大小写混合）
+	w := doJSON(t, r, http.MethodPost, "/api/v1/posts", map[string]any{
+		"board_id": 1, "title": "标签系统", "content": "今天学习 #RAG 和 #Agent",
+	}, token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create post = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created postView
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(created.Tags, []string{"rag", "agent"}) {
+		t.Errorf("create tags = %v, want [rag agent]", created.Tags)
+	}
+
+	// 无标签帖：tags 字段缺省（omitempty）
+	wNo := doJSON(t, r, http.MethodPost, "/api/v1/posts", map[string]any{
+		"board_id": 1, "title": "无标签", "content": "普通正文",
+	}, token)
+	if wNo.Code != http.StatusCreated {
+		t.Fatalf("create no-tag post = %d", wNo.Code)
+	}
+	var noTag postView
+	_ = json.Unmarshal(wNo.Body.Bytes(), &noTag)
+	if len(noTag.Tags) != 0 {
+		t.Errorf("无标签帖 tags = %v, want 空", noTag.Tags)
+	}
+
+	// 按标签聚合（游客可读）
+	wTag := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=rag", nil, "")
+	var feed listResp
+	if err := json.Unmarshal(wTag.Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Items) != 1 || feed.Items[0].ID != created.ID {
+		t.Fatalf("tag=rag items = %d, want 仅带 rag 的帖", len(feed.Items))
+	}
+	if !reflect.DeepEqual(feed.Items[0].Tags, []string{"rag", "agent"}) {
+		t.Errorf("列表 tags = %v, want [rag agent]", feed.Items[0].Tags)
+	}
+
+	// 大小写不敏感：?tag=RAG 命中同一帖
+	wTag2 := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=RAG", nil, "")
+	var feed2 listResp
+	_ = json.Unmarshal(wTag2.Body.Bytes(), &feed2)
+	if len(feed2.Items) != 1 || feed2.Items[0].ID != created.ID {
+		t.Errorf("tag=RAG items = %d, want 1（大小写不敏感）", len(feed2.Items))
+	}
+
+	// 不存在的标签 → 空列表（正常空态）
+	wNone := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=nonexistent", nil, "")
+	var feedNone listResp
+	_ = json.Unmarshal(wNone.Body.Bytes(), &feedNone)
+	if len(feedNone.Items) != 0 {
+		t.Errorf("tag=nonexistent items = %d, want 0", len(feedNone.Items))
+	}
+
+	// 空 tag（?tag=%20 归一化后空）→ 不过滤，返回全部（评审 F3/F5）
+	wSpace := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=%20", nil, "")
+	var feedSpace listResp
+	_ = json.Unmarshal(wSpace.Body.Bytes(), &feedSpace)
+	if len(feedSpace.Items) != 2 {
+		t.Errorf("tag=%%20 items = %d, want 2（空 tag 不过滤）", len(feedSpace.Items))
+	}
+
+	// 删帖 → 标签聚合不再含该帖
+	if w := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/posts/%d", created.ID), nil, token); w.Code != http.StatusOK {
+		t.Fatalf("delete post = %d", w.Code)
+	}
+	wAfter := doJSON(t, r, http.MethodGet, "/api/v1/posts?tag=rag", nil, "")
+	var feedAfter listResp
+	_ = json.Unmarshal(wAfter.Body.Bytes(), &feedAfter)
+	if len(feedAfter.Items) != 0 {
+		t.Errorf("删帖后 tag=rag items = %d, want 0", len(feedAfter.Items))
+	}
+}
+
 // 权限矩阵（#9 §5.0）：作者删自己 / user 删他人 403 / user 置顶 403 / moderator 置顶 200。
 func TestContentPermissions(t *testing.T) {
 	gdb := testutil.SetupPG(t)
@@ -411,5 +500,216 @@ func TestUserProfileEndpoint(t *testing.T) {
 	// 不存在 → 404
 	if w := doJSON(t, r, http.MethodGet, "/api/v1/users/9999", nil, ""); w.Code != http.StatusNotFound {
 		t.Errorf("不存在用户 = %d, want 404", w.Code)
+	}
+}
+
+// TestFavoritesList：GET /api/v1/favorites（#23）。真 PG 是 GORM JOIN + Select 列遮蔽（评审 D1）
+// 与软删过滤唯一能暴露的闸门，故断言**真实主键**而非仅顺序/长度。
+func TestFavoritesList(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-FL1")
+	bob := registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-FL2")
+
+	p1 := createPost(t, r, alice.Token, 1, "alice 帖1")
+	p2 := createPost(t, r, alice.Token, 1, "alice 帖2")
+
+	// 收藏 p1 再收藏 p2 → 列表按收藏时间倒序：p2 在前
+	fav := func(postID int64) {
+		t.Helper()
+		if w := doJSON(t, r, http.MethodPost, "/api/v1/favorites", map[string]any{"post_id": postID}, alice.Token); w.Code != http.StatusOK {
+			t.Fatalf("favorite p%d = %d, body=%s", postID, w.Code, w.Body.String())
+		}
+	}
+	fav(p1.ID)
+	fav(p2.ID)
+
+	// 完整列表：真实主键 + 顺序 + viewer.favorited
+	w := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, alice.Token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /favorites = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Items    []postView `json:"items"`
+		Page     int        `json:"page"`
+		PageSize int        `json:"page_size"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 2 || resp.Items[0].ID != p2.ID || resp.Items[1].ID != p1.ID {
+		t.Errorf("收藏列表 = %d 条, want [p2(%d) p1(%d)]（收藏时间倒序，真实主键）", len(resp.Items), p2.ID, p1.ID)
+	}
+	for _, it := range resp.Items {
+		if it.Viewer == nil || !it.Viewer.Favorited {
+			t.Errorf("items viewer.favorited 应为 true, got %+v", it.Viewer)
+		}
+	}
+
+	// 分页
+	w1 := doJSON(t, r, http.MethodGet, "/api/v1/favorites?page_size=1", nil, alice.Token)
+	var page1 struct {
+		Items []postView `json:"items"`
+	}
+	_ = json.Unmarshal(w1.Body.Bytes(), &page1)
+	if len(page1.Items) != 1 || page1.Items[0].ID != p2.ID {
+		t.Errorf("page_size=1 = %d 条, want [p2]", len(page1.Items))
+	}
+	w2 := doJSON(t, r, http.MethodGet, "/api/v1/favorites?page=2&page_size=1", nil, alice.Token)
+	var page2 struct {
+		Items []postView `json:"items"`
+	}
+	_ = json.Unmarshal(w2.Body.Bytes(), &page2)
+	if len(page2.Items) != 1 || page2.Items[0].ID != p1.ID {
+		t.Errorf("page2/page_size1 = %d 条, want [p1]", len(page2.Items))
+	}
+
+	// 取藏 p2 → 列表只剩 p1
+	if w := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/favorites?post_id=%d", p2.ID), nil, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("unfavorite p2 = %d", w.Code)
+	}
+	w3 := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, alice.Token)
+	var after struct {
+		Items []postView `json:"items"`
+	}
+	_ = json.Unmarshal(w3.Body.Bytes(), &after)
+	if len(after.Items) != 1 || after.Items[0].ID != p1.ID {
+		t.Errorf("取藏后 = %d 条, want [p1]", len(after.Items))
+	}
+
+	// 空态信封：无收藏的 bob → "items":[] 而非 null（评审 D2 协议层断言）
+	w4 := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, bob.Token)
+	if w4.Code != http.StatusOK {
+		t.Fatalf("bob GET /favorites = %d", w4.Code)
+	}
+	if !bytes.Contains(w4.Body.Bytes(), []byte(`"items":[]`)) {
+		t.Errorf("空收藏 body = %s, want 含 \"items\":[]", w4.Body.String())
+	}
+	if bytes.Contains(w4.Body.Bytes(), []byte(`"items":null`)) {
+		t.Errorf("空收藏 body = %s, 不得出现 \"items\":null", w4.Body.String())
+	}
+
+	// 游客 → 401
+	if w := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("游客 GET /favorites = %d, want 401", w.Code)
+	}
+}
+
+// TestListPostsHot 验证 #61 热门流 SQL 排序、置顶×窗口、列遮蔽防护、过滤叠加。
+func TestListPostsHot(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-H1")
+	registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-H2")
+	makeModerator(t, gdb, "bob")
+	mod := login(t, r, "bob")
+
+	now := time.Now()
+
+	// p1: 1 赞（1 分）
+	p1 := createPost(t, r, alice.Token, 1, "p1 like")
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p1.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like p1 = %d", w.Code)
+	}
+
+	// p2: 3 评论（9 分），热度最高
+	p2 := createPost(t, r, alice.Token, 1, "p2 comments")
+	for i := 0; i < 3; i++ {
+		if w := doJSON(t, r, http.MethodPost, "/api/v1/comments", map[string]any{"post_id": p2.ID, "content": fmt.Sprintf("c%d", i)}, alice.Token); w.Code != http.StatusCreated {
+			t.Fatalf("comment p2 = %d", w.Code)
+		}
+	}
+
+	// p3: 0 互动，窗口内置顶 → 应排第一
+	p3 := createPost(t, r, alice.Token, 1, "p3 pinned")
+	if w := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/v1/posts/%d/pin", p3.ID), nil, mod.Token); w.Code != http.StatusOK {
+		t.Fatalf("pin p3 = %d", w.Code)
+	}
+
+	// p4: 8 天前 + 1 评论 → 应被窗口剔除
+	p4 := createPost(t, r, alice.Token, 1, "p4 old")
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/comments", map[string]any{"post_id": p4.ID, "content": "old"}, alice.Token); w.Code != http.StatusCreated {
+		t.Fatalf("comment p4 = %d", w.Code)
+	}
+	if err := gdb.Exec(`UPDATE content.posts SET created_at = ? WHERE id = ?`, now.Add(-8*24*time.Hour), p4.ID).Error; err != nil {
+		t.Fatalf("backdate p4: %v", err)
+	}
+
+	// p5: 10 天前 + 置顶 + 高热度 → 验证置顶不豁免窗口（F2 方案 A）
+	p5 := createPost(t, r, alice.Token, 1, "p5 pinned old")
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p5.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like p5 = %d", w.Code)
+	}
+	for i := 0; i < 5; i++ {
+		if w := doJSON(t, r, http.MethodPost, "/api/v1/comments", map[string]any{"post_id": p5.ID, "content": fmt.Sprintf("c%d", i)}, alice.Token); w.Code != http.StatusCreated {
+			t.Fatalf("comment p5 = %d", w.Code)
+		}
+	}
+	if w := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/v1/posts/%d/pin", p5.ID), nil, mod.Token); w.Code != http.StatusOK {
+		t.Fatalf("pin p5 = %d", w.Code)
+	}
+	if err := gdb.Exec(`UPDATE content.posts SET created_at = ? WHERE id = ?`, now.Add(-10*24*time.Hour), p5.ID).Error; err != nil {
+		t.Fatalf("backdate p5: %v", err)
+	}
+
+	// p6: 带 #ai 标签 + 1 赞，用于 hot+tag 叠加
+	w6 := doJSON(t, r, http.MethodPost, "/api/v1/posts", map[string]any{"board_id": 1, "title": "p6 tag", "content": "聊聊 #ai"}, alice.Token)
+	if w6.Code != http.StatusCreated {
+		t.Fatalf("create p6 = %d, body=%s", w6.Code, w6.Body.String())
+	}
+	var p6 postView
+	_ = json.Unmarshal(w6.Body.Bytes(), &p6)
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p6.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like p6 = %d", w.Code)
+	}
+
+	// 验证热门段顺序（游客访问）
+	w := doJSON(t, r, http.MethodGet, "/api/v1/posts?tab=hot", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET hot = %d, body=%s", w.Code, w.Body.String())
+	}
+	var hot listResp
+	if err := json.Unmarshal(w.Body.Bytes(), &hot); err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []int64{p3.ID, p2.ID, p6.ID, p1.ID}
+	gotIDs := make([]int64, len(hot.Items))
+	for i, v := range hot.Items {
+		gotIDs[i] = v.ID
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Errorf("hot 顺序 = %v, want %v", gotIDs, wantIDs)
+	}
+
+	// 列遮蔽回归：断言返回字段来自 posts 表，未被 JOIN 列覆盖
+	for _, v := range hot.Items {
+		if v.ID == p1.ID && v.AuthorName != "alice" {
+			t.Errorf("p1 列遮蔽: author=%q", v.AuthorName)
+		}
+		if v.ID == p3.ID && !v.IsPinned {
+			t.Errorf("p3 列遮蔽: is_pinned=%v", v.IsPinned)
+		}
+	}
+
+	// 超窗帖 p4/p5 不出现
+	for _, v := range hot.Items {
+		if v.ID == p4.ID || v.ID == p5.ID {
+			t.Errorf("超窗帖 %d 不应出现在热门段", v.ID)
+		}
+	}
+
+	// hot + tag 叠加
+	w2 := doJSON(t, r, http.MethodGet, "/api/v1/posts?tab=hot&tag=ai", nil, "")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET hot+tag = %d, body=%s", w2.Code, w2.Body.String())
+	}
+	var hotTag listResp
+	if err := json.Unmarshal(w2.Body.Bytes(), &hotTag); err != nil {
+		t.Fatal(err)
+	}
+	if len(hotTag.Items) != 1 || hotTag.Items[0].ID != p6.ID {
+		t.Errorf("hot+tag = %+v, want [p6]", hotTag.Items)
 	}
 }

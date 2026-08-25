@@ -32,6 +32,7 @@ type profileResp struct {
 	FollowerCount  int           `json:"follower_count"`
 	FollowingCount int           `json:"following_count"`
 	Viewer         *followViewer `json:"viewer,omitempty"` // 登录态附 following
+	Banned         *bool         `json:"banned,omitempty"` // #34：仅 admin/self 可见（治理信息不外泄）
 }
 
 type followViewer struct {
@@ -46,8 +47,10 @@ func (h *ProfileHandler) GetUserProfile(c *gin.Context) {
 		return
 	}
 	var viewerID int64
+	var viewerRole string
 	if claims, authed := middleware.Identity(c); authed {
 		viewerID = claims.UserID
+		viewerRole = claims.Role
 	}
 	ctx := c.Request.Context()
 
@@ -78,6 +81,9 @@ func (h *ProfileHandler) GetUserProfile(c *gin.Context) {
 	}
 	if viewerID != 0 {
 		resp.Viewer = &followViewer{Following: p.Following}
+	}
+	if viewerRole == "admin" || (viewerID != 0 && viewerID == id) {
+		resp.Banned = &p.Banned // 评审 Q5 附带：admin 或 self-view 才可见封禁状态
 	}
 	c.JSON(http.StatusOK, resp)
 }

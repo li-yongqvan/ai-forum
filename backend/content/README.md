@@ -1,7 +1,7 @@
 # Package content — 内容域深模块接口（Interface README）
 
 > 依据：#4 服务候选边界、#5 数据模型、#7 深模块规范、IA v2 §5.2/§5.3、#9 §5.0 权限矩阵。
-> **状态：已实现（2026-08-18）**。服务、GORM repo、HTTP 端点与测试就位；通知依赖延迟，见「遗留」。
+> **状态：已实现（2026-08-18；#54 标签 2026-08-24）**。服务、GORM repo、HTTP 端点与测试就位；通知依赖延迟，见「遗留」。
 
 ## 范围
 
@@ -14,6 +14,8 @@
 - **计数无冗余列**（#5）：like/comment/favorite 计数均读侧聚合；`posts.view_count` 于 GET 详情时自增。
 - **关注单向**（#5 D4）：关注板块/话题防重复（`ErrAlreadyFollowed`）；取关幂等。
 - **点赞/收藏去重**：重复返回 `ErrAlreadyLiked`/`ErrAlreadyFavorited`；取消幂等。
+- **收藏/关注列表按关系时间倒序**（#23）：`favorites`/`follows_*.created_at` DESC，分页 offset/limit；软删目标自动排除；游客一律 `ErrAuthRequired`。
+- **标签（#54）**：发帖时解析正文 `#关键词` 落库（`content.tags` + `content.post_tags`）。标签名**归一化小写**、≤30 字符、大小写不敏感（`#AI`=`#ai`）；`PostView.Tags` 只读、无则省略。**标签写失败不阻断发帖**（slog 记录）；`postViews` 的标签富化失败**仅缺省不报错**（best-effort）。按标签聚合：`ListFeedQuery.Tag` 过滤 + `GET /posts?tag=`，软删帖自动排除。
 - **角色映射**：`OperatorRole` 来自 JWT（已由 user 边界映射为 user/moderator/admin）。
 
 ## 调用顺序约束（Ordering）
@@ -21,6 +23,8 @@
 - 命令独立，无强制顺序。删除/置顶/精华须先有帖子/评论。
 - `GetCommentTree` 一次深接口调用完成「查整帖 + 内存拼树」，调用方不得分步查询。
 - **关注流（tab=follow）**：聚合关注用户（经 `UserProvider` 进程内调用 user 包）+ 关注板块/话题（本包 repo）；游客请求返回 `ErrAuthRequired`。
+- **我的收藏/关注列表（#23）**：`ListFavorites`（收藏的帖子）/`ListFollowedBoards`/`ListFollowedTopics`，均需登录、按关系时间倒序 + 分页；返回带 `viewer.following/favorited` 初始态。
+- **发帖落标签（#54）**：`CreatePost` 内解析 `content` 提取标签并写入关联；`ReplacePostTags` 为幂等替换（删旧→upsert→插新，事务），写失败仅记录不阻断发帖。标签聚合过滤归一化在 service 层兜底（调用方传入即可）。
 
 ## 错误模式（Errors）
 
@@ -30,7 +34,7 @@
 | `ErrForbidden` | 非作者且非 moderator+ 删帖/评论；非 moderator+ 置顶/精华 | 403 |
 | `ErrAlreadyLiked` / `ErrAlreadyFavorited` / `ErrAlreadyFollowed` | 重复操作 | 409 |
 | `ErrTopicNotInBoard` / `ErrParentNotInPost` / `ErrContentEmpty` / `ErrInvalidTargetType` / `ErrInvalidFeedTab` | 参数非法 | 400 |
-| `ErrAuthRequired` | 关注流游客 | 401 |
+| `ErrAuthRequired` | 关注流 / 收藏与关注列表游客 | 401 |
 
 > 其余 error 为基础设施故障，调用方按 500 处理。权限校验在命令内（#9 §5.0 双保险），前端可见性仅是体验层。
 
@@ -42,6 +46,8 @@
 ## 性能特征（Performance）
 
 - `ListFeed` 读模型：1 主查询 + 3 分组 COUNT + 作者/板块/话题 enrich + 登录态成员查询，O(页长) 独立于全表。
+- **收藏/关注列表（#23）**：JOIN 关系表按 `created_at` 排序，单查询 + `postViews` 复用；显式 `Select(主表.*)` 防 JOIN 列遮蔽（评审 D1）。
+- **标签（#54）**：聚合过滤用 `id IN (子查询 post_tags JOIN tags)`（主查询无 JOIN，免列遮蔽；索引路径 `tags.name` UNIQUE → `post_tags.tag_id` → `post_tags.post_id`）；读模型富化批量 `ListTagsByPostIDs` 一次带出。
 - `GetCommentTree` 单次整帖查询，O(评论数) 内存拼树。50 人规模零压力，不做 scale 索引（#5）。
 - 分页 `limit/offset`（IA v2 §10：MVP 简化，前端无限滚动）。
 

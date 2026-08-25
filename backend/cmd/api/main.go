@@ -13,6 +13,8 @@ import (
 	"github.com/li-yongqvan/ai-forum/backend/internal/database"
 	"github.com/li-yongqvan/ai-forum/backend/internal/httpapi"
 	"github.com/li-yongqvan/ai-forum/backend/migrations"
+	"github.com/li-yongqvan/ai-forum/backend/moderation"
+	"github.com/li-yongqvan/ai-forum/backend/notify"
 	"github.com/li-yongqvan/ai-forum/backend/upload"
 	"github.com/li-yongqvan/ai-forum/backend/user"
 )
@@ -45,8 +47,15 @@ func main() {
 	userSvc := user.NewService(user.NewGormRepo(db), jwtMgr)
 	contentSvc := content.NewService(content.NewGormRepo(db), httpapi.NewUserProvider(userSvc))
 	uploadSvc := upload.NewService(upload.Config{Dir: cfg.UploadsDir, MaxBytes: cfg.MaxUploadBytes})
+	notifySvc := notify.NewService(notify.NewGormRepo(db))
+	moderationSvc := moderation.NewService(
+		moderation.NewGormRepo(db),
+		httpapi.NewContentGateway(contentSvc),
+		httpapi.NewUserGateway(userSvc),
+		httpapi.NewNotifier(notifySvc),
+	)
 
-	r := httpapi.NewEngine(cfg, jwtMgr, userSvc, contentSvc, uploadSvc)
+	r := httpapi.NewEngine(cfg, jwtMgr, userSvc, contentSvc, uploadSvc, notifySvc, moderationSvc)
 	logger.Info("服务启动", "port", cfg.Port, "env", cfg.Env)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		logger.Error("服务退出", "err", err)

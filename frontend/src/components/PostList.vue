@@ -10,6 +10,7 @@ import type { Post } from '../api/types'
 import { goLoginWithReturn } from '../router'
 import PostCard from './PostCard.vue'
 import Empty from './Empty.vue'
+import ReportSheet from './ReportSheet.vue'
 
 const props = defineProps<{
   fetcher: (page: number, pageSize: number) => Promise<{ items: Post[] }>
@@ -59,6 +60,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll))
 // ---- 更多菜单 ----
 const moreShow = ref(false)
 const morePost = ref<Post | null>(null)
+const reportShow = ref(false)
 const moreActions = computed(() => {
   const p = morePost.value
   if (!p) return []
@@ -89,7 +91,12 @@ async function onMoreSelect(a: { key: string }) {
       }
       break
     case 'report':
-      showToast('举报功能即将上线')
+      if (!auth.isLoggedIn) {
+        goLoginWithReturn(route.fullPath)
+        break
+      }
+      moreShow.value = false // 先关更多菜单，再开举报弹窗
+      reportShow.value = true
       break
     case 'delete':
     case 'modDelete':
@@ -199,6 +206,7 @@ function onMore(p: Post) {
       cancel-text="取消"
       @select="onMoreSelect"
     />
+    <ReportSheet v-model:show="reportShow" target-type="post" :target-id="morePost?.id ?? 0" />
   </div>
 </template>
 

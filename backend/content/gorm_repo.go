@@ -3,8 +3,11 @@ package content
 import (
 	"context"
 	"errors"
+	"sort"
+	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // gormRepo 是 Repo 的 GORM 实现（实现细节，深模块内隐藏）。
@@ -80,7 +83,7 @@ func (r *gormRepo) GetPostByID(ctx context.Context, id int64) (*Post, error) {
 	return &p, nil
 }
 
-// ListPosts 信息流/板块/话题/作者列表查询。排序：#9 §5.2「置顶优先 + 时间倒序」（无 pinned_at 列，置顶帖按创建时间排序）。
+// ListPosts 信息流/板块/话题/作者列表查询。排序：默认 #9 §5.2「置顶优先 + 时间倒序」；Feed=hot 时 #61「置顶优先 + 热度降序（赞×1+评论×3）+ 时间倒序兜底」。
 func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
 	q := r.db.WithContext(ctx).Model(&Post{})
 	if in.AuthorID != nil {
@@ -92,12 +95,30 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 	if in.TopicID != nil {
 		q = q.Where("topic_id = ?", *in.TopicID)
 	}
+	if in.Tag != nil {
+		// #54 标签过滤：子查询（主查询无 JOIN → 无列遮蔽；软删帖由主查询 deleted_at IS NULL scope 自动排除）
+		q = q.Where("id IN (SELECT pt.post_id FROM content.post_tags pt JOIN content.tags t ON t.id = pt.tag_id WHERE t.name = ?)", *in.Tag)
+	}
 	if in.Feed == "follow" {
 		// 关注来源聚合：作者/板块/话题任一命中；空集合 → IN (NULL) → 恒 false，正确返回空
 		q = q.Where("author_id IN ? OR board_id IN ? OR topic_id IN ?",
 			in.FollowedUserIDs, in.FollowedBoardIDs, in.FollowedTopicIDs)
 	}
-	q = q.Order("is_pinned DESC").Order("created_at DESC")
+	if in.Feed == "hot" {
+		// #61 热门流：7 天窗口，热度分 = 赞×1 + 评论×3（likes/comments 不落库，LEFT JOIN 现场聚合）；
+		// 窗口内帖子随热度排序，置顶帖仍恒顶（与全部流行为一致）。评论软删由子查询 deleted_at IS NULL 排除。
+		// 注意：子查询必须预聚合；若直接 JOIN 原始 likes/comments 两表，会因笛卡尔积导致计数互乘。
+		q = q.Select("content.posts.*") // 限定主表列，防 JOIN 表列遮蔽（F8）
+		q = q.Where("created_at >= ?", time.Now().Add(-7*24*time.Hour))
+		q = q.Joins("LEFT JOIN (SELECT target_id AS pid, COUNT(*) AS like_cnt FROM content.likes WHERE target_type = 'post' GROUP BY target_id) hot_likes ON hot_likes.pid = content.posts.id")
+		q = q.Joins("LEFT JOIN (SELECT post_id AS pid, COUNT(*) AS cmt_cnt FROM content.comments WHERE deleted_at IS NULL GROUP BY post_id) hot_comments ON hot_comments.pid = content.posts.id")
+	}
+	q = q.Order("is_pinned DESC")
+	if in.Feed == "hot" {
+		// 热度分降序；同分按时间倒序兜底。详见 fake_repo_test.go 的 commentWeight 常量。
+		q = q.Order("(COALESCE(hot_likes.like_cnt, 0) + 3 * COALESCE(hot_comments.cmt_cnt, 0)) DESC")
+	}
+	q = q.Order("created_at DESC")
 	if in.Limit > 0 {
 		q = q.Limit(in.Limit)
 	}
@@ -112,7 +133,13 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 }
 
 func (r *gormRepo) DeletePost(ctx context.Context, id int64) error {
-	return r.db.WithContext(ctx).Delete(&Post{}, id).Error // 软删
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&Post{}, id).Error; err != nil { // 软删
+			return err
+		}
+		// 顺带硬删该帖 post_tags（软删不触发 FK CASCADE，#54 卫生）
+		return tx.Where("post_id = ?", id).Delete(&PostTag{}).Error
+	})
 }
 
 func (r *gormRepo) CountPostsByAuthor(ctx context.Context, authorID int64) (int, error) {
@@ -335,6 +362,132 @@ func (r *gormRepo) ListFollowedTopicIDs(ctx context.Context, followerID int64) (
 		Where("follower_id = ?", followerID).
 		Pluck("topic_id", &ids).Error
 	return ids, err
+}
+
+// ---- 收藏/关注列表（#23） ----
+
+// 列表按关系时间倒序（favorites/follows_*.created_at），需 JOIN 关系表而非 PostQuery 子查询
+// （PostQuery 只能按帖子 created_at 排序）。显式 Select(主表.*)：GORM 默认 SELECT * 会把
+// JOIN 表同名列（id/created_at）覆盖主表字段（列遮蔽），必须限定主表列。
+
+func (r *gormRepo) ListFavoritedPosts(ctx context.Context, userID int64, offset, limit int) ([]*Post, error) {
+	var posts []*Post
+	q := r.db.WithContext(ctx).
+		Model(&Post{}).
+		Select("content.posts.*").
+		Joins("JOIN content.favorites f ON f.post_id = content.posts.id AND f.user_id = ?", userID).
+		Order("f.created_at DESC").
+		Order("f.id DESC") // 同刻决胜，确定性
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&posts).Error; err != nil {
+		return nil, err
+	}
+	return posts, nil
+}
+
+func (r *gormRepo) ListFollowedBoards(ctx context.Context, followerID int64, offset, limit int) ([]*Board, error) {
+	var boards []*Board
+	q := r.db.WithContext(ctx).
+		Model(&Board{}).
+		Select("content.boards.*").
+		Joins("JOIN content.follows_boards fb ON fb.board_id = content.boards.id AND fb.follower_id = ?", followerID).
+		Order("fb.created_at DESC").
+		Order("fb.id DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&boards).Error; err != nil {
+		return nil, err
+	}
+	return boards, nil
+}
+
+func (r *gormRepo) ListFollowedTopics(ctx context.Context, followerID int64, offset, limit int) ([]*Topic, error) {
+	var topics []*Topic
+	q := r.db.WithContext(ctx).
+		Model(&Topic{}).
+		Select("content.topics.*").
+		Joins("JOIN content.follows_topics ft ON ft.topic_id = content.topics.id AND ft.follower_id = ?", followerID).
+		Order("ft.created_at DESC").
+		Order("ft.id DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&topics).Error; err != nil {
+		return nil, err
+	}
+	return topics, nil
+}
+
+// ---- 标签（#54） ----
+
+// ReplacePostTags 事务内替换帖子标签关联：删旧关联 → upsert 标签（ON CONFLICT DO NOTHING，并发安全）→ 批量写关联。
+func (r *gormRepo) ReplacePostTags(ctx context.Context, postID int64, tagNames []string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("post_id = ?", postID).Delete(&PostTag{}).Error; err != nil {
+			return err
+		}
+		if len(tagNames) == 0 {
+			return nil
+		}
+		// 稳定锁序：按标签名排序 upsert（降低多标签并发插入的死锁窗口 F8）；post_tags 仍按原解析顺序写
+		sorted := append([]string(nil), tagNames...)
+		sort.Strings(sorted)
+		idByName := make(map[string]int64, len(sorted))
+		for _, name := range sorted {
+			t := Tag{Name: name}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&t).Error; err != nil {
+				return err
+			}
+			var existing Tag
+			if err := tx.Where("name = ?", name).First(&existing).Error; err != nil {
+				return err
+			}
+			idByName[name] = existing.ID
+		}
+		pts := make([]PostTag, 0, len(tagNames))
+		for _, name := range tagNames {
+			pts = append(pts, PostTag{TagID: idByName[name], PostID: postID})
+		}
+		return tx.Create(&pts).Error
+	})
+}
+
+// ListTagsByPostIDs 批量取多帖标签（读模型富化，#54）。顺序 = post_tags.id 升序（正文首次出现序）。
+func (r *gormRepo) ListTagsByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]string, error) {
+	if len(postIDs) == 0 {
+		return map[int64][]string{}, nil
+	}
+	type tagRow struct {
+		PostID int64
+		Name   string
+	}
+	var rows []tagRow
+	if err := r.db.WithContext(ctx).
+		Table("content.post_tags").
+		Select("content.post_tags.post_id, content.tags.name").
+		Joins("JOIN content.tags ON content.tags.id = content.post_tags.tag_id").
+		Where("content.post_tags.post_id IN ?", postIDs).
+		Order("content.post_tags.id ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int64][]string, len(rows))
+	for _, row := range rows {
+		out[row.PostID] = append(out[row.PostID], row.Name)
+	}
+	return out, nil
 }
 
 // ---- 辅助 ----

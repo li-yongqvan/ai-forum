@@ -9,12 +9,14 @@ import type { CommentNode, Post } from '../api/types'
 import { goLoginWithReturn } from '../router'
 import { formatTime } from '../utils/format'
 import { md } from '../utils/md'
+import { handleContentImageClick } from '../utils/imagePreview'
 import { insertAtCursor } from '../utils/editor'
 import AppIcon from '../components/AppIcon.vue'
 import Avatar from '../components/Avatar.vue'
 import CommentTree from '../components/CommentTree.vue'
 import Empty from '../components/Empty.vue'
 import ImagePicker from '../components/ImagePicker.vue'
+import ReportSheet from '../components/ReportSheet.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,9 +30,27 @@ const commentCount = ref(0)
 const inputText = ref('')
 const replyTo = ref<{ id: number; name: string } | null>(null)
 const inputEl = ref<HTMLInputElement | null>(null)
+const expandRootId = ref<number | null>(null)
 
 function countNodes(nodes: CommentNode[]): number {
   return nodes.reduce((n, c) => n + 1 + countNodes(c.replies ?? []), 0)
+}
+/** 在树中定位 targetId 所属一级分支的根 id（沿祖先链到 parent_id 为 null 的节点）。 */
+function findBranchRoot(nodes: CommentNode[], targetId: number): number | null {
+  for (const c of nodes) {
+    if (c.id === targetId) return c.id
+    if (findBranchRoot(c.replies ?? [], targetId) != null) return c.id
+  }
+  return null
+}
+/** 在树中按 id 找节点（兜底取父节点末子用）。 */
+function findNode(nodes: CommentNode[], targetId: number): CommentNode | null {
+  for (const c of nodes) {
+    if (c.id === targetId) return c
+    const hit = findNode(c.replies ?? [], targetId)
+    if (hit) return hit
+  }
+  return null
 }
 
 async function loadComments() {
@@ -100,8 +120,18 @@ async function toggleFav() {
     showToast((e as Error).message || '操作失败')
   }
 }
-function share() {
+async function share() {
   const url = `${location.origin}/#/post/${id.value}`
+  // 原生分享优先（移动端系统分享面板）；不支持或失败回退复制链接
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: post.value?.title ?? document.title, url })
+      return
+    } catch (err) {
+      // 用户取消分享（AbortError）不算失败：静默结束，不弹提示
+      if ((err as DOMException)?.name === 'AbortError') return
+    }
+  }
   try {
     navigator.clipboard.writeText(url)
     showToast('链接已复制')
@@ -112,6 +142,9 @@ function share() {
 
 // ---- 管理操作（角色显隐，v2 §3.1 轻量治理） ----
 const moreShow = ref(false)
+// ---- 举报（#33：帖子/评论入口） ----
+const reportShow = ref(false)
+const reportTarget = ref<{ type: 'post' | 'comment'; id: number } | null>(null)
 const moreActions = computed(() => {
   const p = post.value
   if (!p) return []
@@ -139,7 +172,13 @@ async function handleMore(a: { key: string }) {
       share()
       break
     case 'report':
-      showToast('举报功能即将上线')
+      if (!auth.isLoggedIn) {
+        goLoginWithReturn(route.fullPath)
+        break
+      }
+      moreShow.value = false
+      reportTarget.value = { type: 'post', id: p.id }
+      reportShow.value = true
       break
     case 'delete':
     case 'modDelete':
@@ -185,6 +224,15 @@ function onReply(cid: number, name: string) {
   inputText.value = `回复 @${name}：`
   nextTick(() => inputEl.value?.focus())
 }
+// 评论举报入口（#33）
+function onReportComment(cid: number) {
+  if (!auth.isLoggedIn) {
+    goLoginWithReturn(route.fullPath)
+    return
+  }
+  reportTarget.value = { type: 'comment', id: cid }
+  reportShow.value = true
+}
 async function onDeleteComment(cid: number) {
   try {
     await showConfirmDialog({ title: '删除评论？', message: '将以「评论已删除」占位保留回复链' })
@@ -208,19 +256,59 @@ async function sendComment() {
     showToast('先说点什么吧')
     return
   }
+  const parentId = replyTo.value?.id ?? null
   try {
-    await api.createComment({
+    const res = (await api.createComment({
       post_id: id.value,
-      parent_id: replyTo.value?.id ?? null,
+      parent_id: parentId,
       content: text,
-    })
+    })) as { id?: number } | null
+    let newId = res?.id
     inputText.value = ''
     replyTo.value = null
     showToast('评论已发布')
-    loadComments()
+    await loadComments()
+    // 双路径兜底（评审 F1）：res.id 缺失时——顶层取 tree 末元素（floor 升序，最新在末尾）、
+    // 回复取父节点末子（created_at 升序，最新在末尾）
+    if (newId == null && tree.value.length) {
+      if (parentId == null) {
+        newId = tree.value[tree.value.length - 1].id
+      } else {
+        const kids = findNode(tree.value, parentId)?.replies ?? []
+        if (kids.length) newId = kids[kids.length - 1].id
+      }
+    }
+    await revealComment(newId, parentId)
   } catch (e) {
     showToast((e as Error).message || '评论失败')
   }
+}
+
+// 回复后：展开所在分支 + 滚动定位新回复（D4）。
+// 依赖 expandRootId 的 pre-flush watcher + 两拍 nextTick 后 query DOM——勿改 flush 时机。
+async function revealComment(newId: number | undefined, parentId: number | null) {
+  if (newId == null) return
+  await nextTick() // 渲染 reload 后的新树
+  if (parentId != null) {
+    const rootId = findBranchRoot(tree.value, parentId)
+    if (rootId != null) {
+      expandRootId.value = null // 先复位：保证 null→rootId 变更必触发 watcher（同分支二次回复）
+      expandRootId.value = rootId
+    }
+  }
+  await nextTick() // 渲染展开后的分支
+  const el = document.querySelector(`[data-comment-id="${newId}"]`)
+  if (el) {
+    el.scrollIntoView({ block: 'center' })
+    el.classList.add('comment-flash')
+    setTimeout(() => el.classList.remove('comment-flash'), 1600)
+  } else {
+    console.warn(`[PostDetail] 未找到新评论元素 data-comment-id=${newId}`)
+  }
+}
+
+function onExpandRootHandled() {
+  expandRootId.value = null
 }
 
 // 图片按钮的登录墙守卫（#9 §4：游客点击跳登录，返回后回到本帖）
@@ -264,7 +352,7 @@ function onImage(url: string) {
 
     <h1 class="dtitle">{{ post.title }}</h1>
     <!-- eslint-disable-next-line vue/no-v-html -->
-    <div v-html="md(post.content)"></div>
+    <div v-html="md(post.content)" @click="handleContentImageClick"></div>
 
     <div class="dacts">
       <button class="dact" :class="{ on: post.viewer?.liked }" @click="toggleLike">
@@ -283,9 +371,11 @@ function onImage(url: string) {
       v-if="tree.length"
       :comments="tree"
       :post-id="post.id"
+      :expand-root-id="expandRootId"
       @reply="onReply"
-      @report="() => showToast('举报功能即将上线')"
+      @report="onReportComment"
       @delete="onDeleteComment"
+      @expand-root-handled="onExpandRootHandled"
     />
     <Empty v-else title="还没有评论" desc="来抢沙发" />
 
@@ -294,6 +384,11 @@ function onImage(url: string) {
       :actions="moreActions"
       cancel-text="取消"
       @select="handleMore"
+    />
+    <ReportSheet
+      v-model:show="reportShow"
+      :target-type="reportTarget?.type ?? 'post'"
+      :target-id="reportTarget?.id ?? 0"
     />
 
     <!-- 底部评论栏 -->

@@ -45,8 +45,8 @@
 - **唯一状态机 = 地图 issue #1** 的 Roadmap / 开放项。新功能先落 ticket（issue），再进 Roadmap。
 - **优先级原则**：价值 × 学习目标（项目是学习导向，见地图 Destination）。
 - **当前顺序**（首发后首批）：
-  1. **#26 部署可靠性：镜像交付 CI 内 scp 镜像包（A' 方案，已落地）**（见 §9.2；不依赖任何 registry 账号；验收线 = 连续 3 次发版零超时）
-  2. **前端单测进 CI**（`continue-on-error` 过渡 → 转阻塞，见 §7）
+  1. **#26 部署可靠性：镜像交付改 CI 内 scp 镜像包（A' 方案，已落地）**（见 §9.2；不依赖任何 registry 账号）
+  2. **前端单测进 CI**（已挂入：`frontend-test` job 非阻塞过渡 → 转阻塞，见 §7）
   3. **#23 收藏/关注列表**（见 §12 walkthrough）
   4. 下一批按「价值 × 学习目标」排，朝组合 B 微服务演进。
 - **根因 2.3（本地全量测试慢）的显式表态**：开发中只测改动包（`go test ./<pkg>/...`），push 前全量；**不引入 pre-push 钩子**（避免本地环境差异阻塞提交，CI 是最终 gate）。
@@ -68,7 +68,7 @@
 
 ## 4. 分支与提交
 
-1. **动手前对齐**：`git fetch origin && git checkout main && git pull origin main`（本地可能有并行会话残留分支，先对齐远端）。
+1. **动手前对齐**：先 `git status --porcelain` 确认工作区无其他会话的未提交改动（脏就停，查明再动），再 `git fetch origin && git checkout main && git pull origin main`（本地可能有并行会话残留分支，先对齐远端）。并行会话建议用 `git worktree` 隔离工作区（见 §11）。
 2. **建分支**：`git checkout -b <type>/<slug>`（type：`feat`/`fix`/`docs`/`chore`/`refactor`）。
 3. **提交规范**：conventional commit，`<type>(<scope>): <subject>`，scope 用包/模块名（如 `fix(content)`、`docs(ops)`）。
 4. **服务器 repo 卫生红线**：服务器 `~/ai-forum` 内文件**只准 git 改动，禁止 scp/手工写**（会挡 CI 的 git pull，踩过，见 lessons §1-B）。
@@ -128,7 +128,7 @@
 | 后端 service | 单测，fake repo（`<包>/fake_repo_test.go`） | **阻塞**（test job） | 成功+主要失败路径；核心模块 ≥70% |
 | 后端 handler | 集成，testcontainers 真实 PG（`internal/testutil/db.go`，无 Docker 自动 skip） | **阻塞** | 关键 REST 端点 |
 | 后端 lint | golangci | **非阻塞**（`continue-on-error`） | 已知遗留 `upload.go:46` errcheck |
-| 前端单测 | vitest（`<Name>.test.ts`） | **当前不进 CI**；规划 `continue-on-error` 过渡 → **连续 5 run 全绿后下一票转阻塞** | 工具/composable/store；组件参照 PostDetail |
+| 前端单测 | vitest（`<Name>.test.ts`） | **已进 CI**（`frontend-test` job，`continue-on-error` 过渡，非阻塞）；**该 job 连续 5 次全绿后下一票转阻塞**（转正：移除 continue-on-error + deploy needs 加入，见 §9.1） | 工具/composable/store；组件参照 PostDetail |
 | E2E | Playwright | **不进 MVP CI**，本地跑 | 主流程冒烟 |
 | workflow 自身 | actionlint（`workflow-lint.yml`，任何分支 push） | **阻塞** | 防止 CI 瘫痪 |
 
@@ -146,17 +146,21 @@
 2. 建 PR：`MSYS_NO_PATHCONV=1 gh pr create --base main --title "<type>(<scope>): <desc>" --body "..."`（gh 间歇 404，失败重试 ≤4；或 curl 完整 URL）。
 3. **合并前自审**：`/code-review`（审查：符合规范？符合 ticket 意图？）—— 桌面/终端执行 skill。
 4. **等待用户明确授权**，然后 `gh pr merge <N> --merge`（保持合并历史）。
-5. **PR 阶段无 CI 是已知遗留**：`deploy.yml` 仅 `on: push: [main]`。规划项：加 `pull_request` 触发（test/lint 在 PR 跑、deploy job 级 `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`、test/lint 加 `paths-ignore: ['docs/**','**.md']`），见 §9.3。落地前，合并进 main 的那次 CI 是首个反馈点。
+5. **PR 阶段无 CI 是已知遗留**：`deploy.yml` 仅 `on: push: [main]`（#43 起加了 `workflow_dispatch` 应急手动触发，非 PR 触发）。规划项：加 `pull_request` 触发（test/lint 在 PR 跑、deploy job 级 `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`、test/lint 加 `paths-ignore: ['docs/**','**.md']`），见 §9.3。落地前，合并进 main 的那次 CI 是首个反馈点。
+6. **引用规范（编号空间）**：GitHub 中 issue 与 PR **共用同一编号空间**（PR 内部即一种特殊 issue，`gh issue view N` 能查到 PR），裸写「#N」有歧义——曾出现「#27」实为 SOP 落地 PR、却被误当关注列表 ticket（2026-08-20）。**一律显式标注类型**：ticket 写「issue #N」、合并请求写「PR #N」，**不裸写编号**；外部链接用完整 URL（`/issues/N` 与 `/pull/N` 区分）。
 
 ---
 
 ## 9. 部署与验证
 
-### 9.1 CI deploy job 流程（当前）
-push main → `test`(阻塞) → `lint`(非阻塞) → `deploy`：
-前端 `npm ci && npm run build` → scp `frontend/dist/*` 到服务器 `~/ai-forum/frontend/dist`（`strip_components: 2`）→ 推 GHCR 镜像（冗余备份）→ `docker save | gzip` 出镜像包 → scp 到服务器 `/tmp` → ssh 脚本：`git pull` → `mkdir -p frontend/dist uploads` → `docker load -i /tmp/api-image.tar.gz` → `up -d --force-recreate api` → `nginx -t && nginx -s reload` → `image prune` → `compose ps`。
+### 9.1 CI deploy job 流程（当前，v3.2 服务器本地构建，#43）
+push main → `test`(阻塞) → `frontend-test`(阻塞) → `lint`(非阻塞) → `deploy`（**双模式**，`DEPLOY_MODE` 仓库 variable）：
+- **默认 `server`**：前端 `npm ci && npm run build`（构建验证）→ `tar -czf ai-forum-frontend.tar.gz`（~300KB，替代 dist/* 直传）→ scp `/tmp` → ssh 脚本 `git pull --ff-only` → `bash deploy/deploy-server.sh`——服务器 `docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api`（go mod 走 goproxy.cn；BuildKit cache mount 越部署越快）→ `up -d --force-recreate api` → **健康轮询 ≤60s + 坏镜像自动回退 rollback tag + 回退后再轮询 ≤30s** → **前端换装**（保 inode 清旧）→ `nginx -t && nginx -s reload` → `image prune` → `compose ps`。
+- **应急 `scp`**（服务器构建环境坏了 → 改 variable + Actions Re-run 即切，无需改代码/merge）：追加 CI `docker build load` → `docker save|gzip` → scp → 服务器 `load` + up + **健康等待 ≤60s**（A' 老路）。
 
-**门控**：secrets → job env → step `if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'`。**secrets 永不进 if**（job/step 皆禁，白名单：job 级 `github, needs, vars, inputs`；step 级含 `env`），本地校验 `bash scripts/check-workflows.sh`。
+**门控**：secrets → job env → step `if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true'`（scp 模式专属步追加 `&& vars.DEPLOY_MODE == 'scp'`）。**secrets 永不进 if**（job/step 皆禁，白名单：job 级 `github, needs, vars, inputs`；step 级含 `env`），本地校验 `bash scripts/check-workflows.sh`。
+
+**量化验收（#43，评审 F5 决议）**：deploy job **≤5min**（现状 ~18min）+ 连续 3 次发版零超时。
 
 ### 9.2 镜像交付：CI 内 scp 镜像包（A' 方案，#26 定案）
 **问题**：服务器→GHCR 下载 ~KB/s（实测 573B/s、2.6KB/s 两档），PR#21 曾两次部署超时。原定 GHCR→阿里云 ACR，但**共享服务器无法登录其阿里云账号**（ACR 需该账号开通），故改为 A'。
@@ -169,6 +173,8 @@ push main → `test`(阻塞) → `lint`(非阻塞) → `deploy`：
 - 注意事项：CI runner（美国）→阿里云 scp 带宽 ~12KB/s（本机→服务器 ~780KB/s，跨洋慢得多）；`appleboy/scp-action` 的 `source` 需相对 `$GITHUB_WORKSPACE`。
 
 **不选其他路径的原因**：ACR 需服务器阿里云账号（不可得）；服务器本地构建需 golang 基础镜像（Docker Hub 被墙、服务器无该镜像）；改 daemon 镜像加速需 sudo（无 sudo）。
+
+> **v3.2 覆盖（#43，2026-08-24）**：服务器本地构建已替代 A' 为主路径（deploy ~18min → ~4-5min，验收 ≤5min + 连续 3 次零超时）。「服务器本地构建需 golang 基础镜像」已由一次性预灌 golang:1.26-alpine + alpine:3.21 + `docker/dockerfile:1` 解决（见 `docs/ops/deployment-v3-8888-container.md` §7）。A' 保留为 `DEPLOY_MODE=scp` **应急回退通道**（deploy.yml 内仍含其步骤，改 variable + Re-run 即切）。A' 的核心认知不变：跨洋 scp 是物理瓶颈、GHCR 从服务器拉取 ~2.6KB/s 不可作快速通道。
 
 ### 9.3 规划项：PR 阶段功能 CI（#26 后并入）
 见 §8.5。目标：错误在合并前暴露，消掉「合并→修→再合并」返工。
@@ -211,6 +217,12 @@ curl http://122.51.233.225:8888/api/v1/posts
 | `frontend/components.d.ts` 被改写 | 提交前 `git checkout --` |
 | PWA 纯 HTTP 下 SW 不注册 | 已知技术债（#8 决策后果），SPA 正常 |
 | 镜像名 `li-yongquan` vs `li-yongqvan` | 用 `li-yongqvan`（qvan） |
+| 并行会话共用工作区——未提交改动跨 checkout 存活；HEAD 停在他人分支时 commit 会误落错分支 | 动手前先 `git status --porcelain`（脏就停）；会话收尾要么提交、要么把 HEAD 交还正确分支；结构性隔离用 `git worktree` |
+| 前端换装换掉 dist inode（bind mount 坑） | 换装保目录 inode：`find dist -mindepth 1 -delete` + staging `cp -a` 原地铺新，禁 `rm -rf && mv`（#43） |
+| `set -e` 下 `cmd && break` 误杀脚本 | 健康轮询等循环用 if/fi + `\|\| echo none` 兜底，勿用 `cmd && break`（#43） |
+| 脚本化 `docker compose exec` 无 TTY | 非交互上下文统一 `-T`（#43） |
+| 服务器 proxy.golang.org 被墙 | go mod 走 goproxy.cn：Dockerfile `ARG GOPROXY` + 服务器 build-arg 覆盖（#43） |
+| 服务器构建坏（builder 镜像坏/goproxy 不通） | 旧容器照跑（build 先于 up）；翻 `DEPLOY_MODE=scp` + Re-run 走 A' 应急通道（#43） |
 
 ---
 

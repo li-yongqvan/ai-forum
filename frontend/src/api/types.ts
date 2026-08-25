@@ -55,6 +55,7 @@ export interface Post {
   like_count: number
   comment_count: number
   favorite_count: number
+  tags?: string[] // #54 正文标签（归一化小写；无则省略）
   viewer?: PostViewer
   created_at: string
 }
@@ -83,6 +84,22 @@ export interface PostList {
   page_size: number
 }
 
+// 通用分页信封（#23；既有 PostList/NotificationList 暂不归并，新列表代码用 Page<T>）
+export interface Page<T> {
+  items: T[]
+  page: number
+  page_size: number
+}
+
+// 我关注的用户行（#23；最小画像字段，后端刻意不返回 Email/Role）
+export interface FollowedUser {
+  id: number
+  username: string
+  avatar_url: string | null
+  bio: string | null
+  viewer?: FollowViewer
+}
+
 export interface UserProfile {
   id: number
   username: string
@@ -93,6 +110,8 @@ export interface UserProfile {
   follower_count: number
   following_count: number
   viewer?: FollowViewer
+  /** #34：是否被封禁。仅 admin / 本人响应含该字段（服务端门控）。 */
+  banned?: boolean
 }
 
 export type FollowTargetType = 'user' | 'board' | 'topic'
@@ -100,4 +119,58 @@ export type FollowTargetType = 'user' | 'board' | 'topic'
 export interface FollowTarget {
   target_type: FollowTargetType
   target_id: number
+}
+
+// 通知中心（#32/#53）：6 类；report_result 举报人视角、report_handled 被举报人视角
+export type NotificationType = 'follow' | 'like' | 'comment' | 'reply' | 'report_result' | 'report_handled'
+
+export interface AppNotification {
+  id: number
+  type: NotificationType
+  actor_id?: number
+  actor_name?: string
+  target_type?: string
+  target_id?: number
+  target_title?: string
+  is_read: boolean
+  created_at: string
+}
+
+// 私信（#59）
+export interface AppMessage {
+  id: number
+  from_user_id: number
+  to_user_id: number
+  content: string
+  is_read: boolean
+  created_at: string
+}
+
+export interface Conversation {
+  peer_id: number
+  peer_name: string
+  peer_avatar?: string
+  last_message: AppMessage
+  unread_count: number
+}
+
+// ---- 举报/治理（#33） ----
+
+export type ReportTargetType = 'user' | 'post' | 'comment'
+export type ReportStatus = 'pending' | 'resolved' | 'dismissed'
+
+export interface Report {
+  id: number
+  reporter_id: number
+  reporter_username?: string
+  target_type: ReportTargetType
+  target_id: number
+  target_title?: string
+  reason: string
+  reporter_note?: string
+  status: ReportStatus
+  handler_id?: number
+  handled_at?: string
+  handling_note?: string
+  created_at: string
 }

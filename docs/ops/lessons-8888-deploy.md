@@ -22,6 +22,7 @@
 **根因**：**Git Bash MSYS 路径转换**把 gh 参数里以 `/` 开头的路径改写成了 Windows 路径（`/repos/...` → `C:/Program Files/Git/repos/...`），gh 收到坏路径自然 404。同机 curl 带完整 URL 却能 200 —— 这是区分关键。
 **对策**：所有 gh 命令加 `MSYS_NO_PATHCONV=1`；`gh api` 的 POST/PATCH 仍偶发 404 → 直接 `curl` 完整 `https://api.github.com/...` URL 更可靠。
 **教训**：**先怀疑本地工具/路径/编码，再归因网络**；用「同 token 不同调用方式对照」定位。
+**补充（2026-08-20 修正）**：`gh auth refresh`（用户手动重登）后，`gh issue view/edit` 读路径**恢复正常**——此前残留的「读 404/写 200」实为**鉴权过期叠加**，非纯 API 限制。结论：读到 404 时先查 `gh auth status` + `gh auth refresh`，再走 curl 兜底，勿把「读永远不通」当长期假设。
 
 ### #18 —— `ssh -T` 的退出码怪癖
 
@@ -55,6 +56,7 @@
 4. **地图 issue #1 按里程碑更新**，别攒到收尾。
 5. **CI run 状态优先看服务器落地效果**（git pull 到的 commit、容器重启时间、上传 URL）而不是 GitHub API。
 6. 遇到疑似网络问题：**最多重试 4 次、换验证方式、先排除本地因素（MSYS/路径/编码/配置）再归因网络**。
+7. **gh `--body-file` 路径坑（#34/#47 两次踩到）**：Git Bash 的 `/tmp/xxx` 路径 gh 不识别（被当字面量 → 文件找不到）；`--body '...'` 内联又会被 bash 解释反引号/`$`/换行。可靠做法：正文先 Write 成文件，再 `--body-file` 用 **仓库内相对路径**（如 `docs/xxx.md`）或 **Windows 绝对路径 + `MSYS_NO_PATHCONV=1`**（如 `C:/Users/.../xxx.md`）。
 
 ## 3. 可复用验证命令速查
 
@@ -77,3 +79,13 @@ curl -s -H "Authorization: Bearer $TOK" https://ghcr.io/v2/li-yongqvan/ai-forum-
 export MSYS_NO_PATHCONV=1
 docker run --rm -v "C:/Users/liyongquan/ai-forum/backend:/repo" -w /repo golangci/golangci-lint:v2.12.2 golangci-lint config verify
 ```
+
+## 4. #43 服务器本地构建（2026-08-24 新增坑位）
+
+1. **proxy.golang.org 服务器不可达（实测超时）** → `go mod download` 必失败。对策：Dockerfile `ARG GOPROXY` + 服务器 build `--build-arg GOPROXY=https://goproxy.cn,direct`（实测 200/0.06s）。CI（runner）可访问默认 proxy.golang.org，默认不覆盖。
+2. **服务器无 golang/alpine builder 镜像（Docker Hub 被墙）** → merge 前一次性预灌 `golang:1.26-alpine` + `alpine:3.21` + `docker/dockerfile:1`（BuildKit frontend，Dockerfile:1 `# syntax=` 需要）。本机（中国）可能也拉不到 Docker Hub，走镜像源 `docker pull m.daocloud.io/docker.io/library/golang:1.26-alpine` 再 retag。
+3. **前端换装 bind-mount inode 坑** → web 容器挂 `frontend/dist` 的 inode，`rm -rf dist && mv` 换目录后容器仍挂旧 inode、新文件永不生效。对策：`find dist -mindepth 1 -delete`（清内容保目录）+ staging `cp -a` 原地铺新（`deploy/deploy-server.sh`）。**换装非原子**：`find -delete` + `cp -a` 中途失败会留半换装 dist（部分 chunk 404 至下个发版），MVP 接受（与 scp 只增不删同源，#14 取舍）。
+4. **`set -e` 下 `cmd && break` 误杀** → 健康轮询循环里 `[ "$st" = healthy ] && break` 在非 healthy 时返回非零 → set -e 整脚本退出。对策：if/fi + `|| echo none` 兜底。
+5. **`docker compose exec` 无 TTY** → 脚本/CI 非交互上下文统一 `-T`（appleboy/ssh-action 分配 PTY 时现版不带 -T 也能跑，但 -T 两边都安全）。
+6. **compose 加 `build:` 段后 `pull api` 语义变** → 拉 GHCR 过期 `:latest`；裸 `up -d` 缺镜像时用默认 GOPROXY 构建失败。对策：bootstrap/部署显式 `docker compose build --build-arg ...`。
+7. **回退保险 tag 时机** → `docker tag :latest :rollback` 必须在 build **之前**（build 成功覆盖 :latest 后旧镜像变 dangling 被 prune，无回退源）。

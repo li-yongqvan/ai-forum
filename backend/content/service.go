@@ -3,6 +3,7 @@ package content
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type PostView struct {
 	BoardName     string    `json:"board_name"`
 	TopicID       *int64    `json:"topic_id"`
 	TopicName     *string   `json:"topic_name"`
+	Tags          []string  `json:"tags,omitempty"` // #54 正文标签（归一化小写；无则省略）
 	AuthorID      int64     `json:"author_id"`
 	AuthorName    string    `json:"author_name"`
 	AuthorAvatar  *string   `json:"author_avatar"`
@@ -71,6 +73,13 @@ type CommentView struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// PostMetaView 帖子最小元数据（治理域 enrich/处理用，#33 S4：复用 repo.GetPostByID，
+// 不触发 view_count 自增——GetPost 有浏览副作用，不能用于治理侧查询）。
+type PostMetaView struct {
+	AuthorID int64
+	Title    string
+}
+
 type LikeCmd struct {
 	UserID     int64
 	TargetType string // post | comment
@@ -101,11 +110,33 @@ type ToggleCmd struct {
 }
 
 type ListFeedQuery struct {
-	Tab      string // all | follow
+	Tab      string // all | hot | follow（#61：hot = 热度流，公开，游客可见）
 	ViewerID int64  // 0 = 游客
 	AuthorID *int64 // 按作者过滤（用户主页/我的帖子）
 	BoardID  *int64
 	TopicID  *int64
+	Tag      *string // #54 标签过滤（归一化小写名）
+	Page     int
+	PageSize int
+}
+
+// ListFavoritesQuery 我收藏的帖子列表（#23）。
+type ListFavoritesQuery struct {
+	ViewerID int64 // 0 = 游客
+	Page     int
+	PageSize int
+}
+
+// ListFollowedBoardsQuery 我关注的板块列表（#23）。
+type ListFollowedBoardsQuery struct {
+	ViewerID int64
+	Page     int
+	PageSize int
+}
+
+// ListFollowedTopicsQuery 我关注的话题列表（#23）。
+type ListFollowedTopicsQuery struct {
+	ViewerID int64
 	Page     int
 	PageSize int
 }
@@ -194,11 +225,20 @@ type Service interface {
 	Unfavorite(ctx context.Context, in FavoriteCmd) error
 
 	GetPost(ctx context.Context, in GetPostQuery) (PostView, error)
+	// GetPostMeta 返回帖子最小元数据（作者 + 标题），不触发浏览量自增（治理域 enrich/处理用，#33 S4）。
+	GetPostMeta(ctx context.Context, id int64) (PostMetaView, error)
+	// GetComment 按 id 返回单条评论读模型（治理域 enrich/处理用，#33 S4）。
+	GetComment(ctx context.Context, id int64) (CommentView, error)
 	ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error)
 	GetCommentTree(ctx context.Context, postID int64) (CommentTreeView, error)
 	ListBoards(ctx context.Context, viewerID int64) ([]BoardView, error)
 	ListTopics(ctx context.Context, viewerID int64, boardID *int64) ([]TopicView, error)
 	CountPostsByAuthor(ctx context.Context, authorID int64) (int, error)
+
+	// 我的收藏/关注列表（#23，按关系时间倒序 + 分页，均需登录）
+	ListFavorites(ctx context.Context, in ListFavoritesQuery) ([]PostView, error)
+	ListFollowedBoards(ctx context.Context, in ListFollowedBoardsQuery) ([]BoardView, error)
+	ListFollowedTopics(ctx context.Context, in ListFollowedTopicsQuery) ([]TopicView, error)
 
 	DeletePost(ctx context.Context, in DeletePostCmd) error
 	DeleteComment(ctx context.Context, in DeleteCommentCmd) error
@@ -254,6 +294,12 @@ func (s *service) CreatePost(ctx context.Context, in CreatePostCmd) (PostView, e
 	}
 	if err := s.repo.CreatePost(ctx, p); err != nil {
 		return PostView{}, err
+	}
+	// #54 标签落库：标签为派生元数据，写失败仅记日志不阻断发帖（评审 §6.4）
+	if tags := ParseTags(in.Content); len(tags) > 0 {
+		if err := s.repo.ReplacePostTags(ctx, p.ID, tags); err != nil {
+			slog.Warn("content: 帖子标签写入失败", "post_id", p.ID, "err", err)
+		}
 	}
 	return s.postView(ctx, p, in.AuthorID)
 }
@@ -437,6 +483,24 @@ func (s *service) GetPost(ctx context.Context, in GetPostQuery) (PostView, error
 	return s.postView(ctx, p, in.ViewerID)
 }
 
+// GetPostMeta 返回帖子最小元数据，不做浏览量自增（#33 S4：治理域 enrich 不能污染统计数据）。
+func (s *service) GetPostMeta(ctx context.Context, id int64) (PostMetaView, error) {
+	p, err := s.repo.GetPostByID(ctx, id)
+	if err != nil {
+		return PostMetaView{}, ErrPostNotFound
+	}
+	return PostMetaView{AuthorID: p.AuthorID, Title: p.Title}, nil
+}
+
+// GetComment 按 id 返回单条评论读模型（#33 S4：治理域 enrich 需按 comment id 读，现有 GetCommentTree 只按 post id 聚合）。
+func (s *service) GetComment(ctx context.Context, id int64) (CommentView, error) {
+	c, err := s.repo.GetCommentByID(ctx, id)
+	if err != nil {
+		return CommentView{}, ErrCommentNotFound
+	}
+	return s.commentView(ctx, c, nil), nil
+}
+
 func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error) {
 	page := in.Page
 	if page < 1 {
@@ -450,10 +514,19 @@ func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, e
 		pageSize = 100
 	}
 	q := PostQuery{AuthorID: in.AuthorID, BoardID: in.BoardID, TopicID: in.TopicID, Offset: (page - 1) * pageSize, Limit: pageSize}
+	if in.Tag != nil {
+		// #54 标签归一化（大小写不敏感，D2）：seam 层兜底，不依赖调用方先归一化
+		if t := NormalizeTag(*in.Tag); t != "" {
+			q.Tag = &t
+		}
+	}
 
 	switch in.Tab {
 	case "", "all":
 		q.Feed = "all"
+	case "hot":
+		// #61 热门流：公开、游客可见；排序在 repo 层（赞×1+评论×3，7 天窗口）
+		q.Feed = "hot"
 	case "follow":
 		if in.ViewerID == 0 {
 			return nil, ErrAuthRequired
@@ -603,6 +676,78 @@ func (s *service) CountPostsByAuthor(ctx context.Context, authorID int64) (int, 
 	return s.repo.CountPostsByAuthor(ctx, authorID)
 }
 
+// normalizePage 统一分页归一化（与 ListFeed 内联逻辑一致；page 从 1 起，pageSize 默认 20、上限 100）。
+func normalizePage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+// ListFavorites 返回我收藏的帖子，按收藏时间倒序 + 分页（#23）。复用 postViews 读模型。
+func (s *service) ListFavorites(ctx context.Context, in ListFavoritesQuery) ([]PostView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	posts, err := s.repo.ListFavoritedPosts(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	return s.postViews(ctx, posts, in.ViewerID)
+}
+
+// ListFollowedBoards 返回我关注的板块，按关注时间倒序 + 分页（#23）。
+func (s *service) ListFollowedBoards(ctx context.Context, in ListFollowedBoardsQuery) ([]BoardView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	boards, err := s.repo.ListFollowedBoards(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	// make([]T,0,n)：空结果序列化为 "items":[] 而非 null（信封契约，评审 D2）
+	views := make([]BoardView, 0, len(boards))
+	for _, b := range boards {
+		views = append(views, BoardView{
+			ID:          b.ID,
+			Name:        b.Name,
+			Description: b.Description,
+			Viewer:      &FollowViewer{Following: true},
+		})
+	}
+	return views, nil
+}
+
+// ListFollowedTopics 返回我关注的话题，按关注时间倒序 + 分页（#23）。
+func (s *service) ListFollowedTopics(ctx context.Context, in ListFollowedTopicsQuery) ([]TopicView, error) {
+	if in.ViewerID == 0 {
+		return nil, ErrAuthRequired
+	}
+	page, pageSize := normalizePage(in.Page, in.PageSize)
+	topics, err := s.repo.ListFollowedTopics(ctx, in.ViewerID, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]TopicView, 0, len(topics))
+	for _, t := range topics {
+		views = append(views, TopicView{
+			ID:      t.ID,
+			BoardID: t.BoardID,
+			Name:    t.Name,
+			Viewer:  &FollowViewer{Following: true},
+		})
+	}
+	return views, nil
+}
+
 // ---- 读模型组装 ----
 
 func (s *service) postView(ctx context.Context, p *Post, viewerID int64) (PostView, error) {
@@ -674,6 +819,11 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 			topicNames[t.ID] = t.Name
 		}
 	}
+	// #54 标签富化（best-effort，评审 F7：tags 查询失败仅缺省，不拖垮列表）
+	tagsByPost := map[int64][]string{}
+	if tm, err := s.repo.ListTagsByPostIDs(ctx, postIDs); err == nil {
+		tagsByPost = tm
+	}
 
 	views := make([]PostView, 0, len(posts))
 	for _, p := range posts {
@@ -694,6 +844,7 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 			FavoriteCount: favCnt[p.ID],
 			CreatedAt:     p.CreatedAt,
 		}
+		view.Tags = tagsByPost[p.ID]
 		if p.TopicID != nil {
 			if n, ok := topicNames[*p.TopicID]; ok {
 				view.TopicName = &n

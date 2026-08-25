@@ -2,10 +2,11 @@
 // mock 刻意返回后端旧契约 {"comments":null}（空评论树被序列化为 null），
 // 验证前端 `?? []` 防御 + 评论数 0 + 空状态渲染。
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
 import CommentTree from '../components/CommentTree.vue'
 import Empty from '../components/Empty.vue'
-import type { CommentTree as CommentTreeType, Post } from '../api/types'
+import type { CommentNode as CommentNodeType, CommentTree as CommentTreeType, Post } from '../api/types'
 
 // 注：PostDetail 依赖的 ../router 在模块加载时就有副作用（createRouter），
 // 且 vue-router 需被 mock（测试环境没有 <Router> 上下文）→ 两个都 mock。
@@ -17,17 +18,22 @@ vi.mock('../router', () => ({ goLoginWithReturn: vi.fn() }))
 vi.mock('vant', () => ({
   showToast: vi.fn(),
   showConfirmDialog: vi.fn(),
+  showImagePreview: vi.fn(),
 }))
+// 可变登录态：回复流用例需切 isLoggedIn=true（现有用例默认 false，向后兼容）
+const authState = vi.hoisted(() => ({ isLoggedIn: false, user: null, isMod: false }))
 vi.mock('../stores/auth', () => ({
-  useAuthStore: () => ({ isLoggedIn: false, user: null, isMod: false }),
+  useAuthStore: () => authState,
 }))
 vi.mock('../api/content', () => ({
   getPost: vi.fn(),
   getComments: vi.fn(),
+  createComment: vi.fn(),
 }))
 
 import PostDetail from './PostDetail.vue'
 import * as api from '../api/content'
+import { showImagePreview, showToast } from 'vant'
 
 function mockPost(): Post {
   return {
@@ -48,6 +54,21 @@ function mockPost(): Post {
     comment_count: 0,
     favorite_count: 0,
     created_at: '2026-08-19T00:00:00Z',
+  }
+}
+
+function makeCommentNode(id: number, replies: CommentNodeType[] = [], parentId: number | null = null): CommentNodeType {
+  return {
+    id,
+    post_id: 5,
+    author_id: 1,
+    author_name: `u${id}`,
+    parent_id: parentId,
+    floor: null,
+    content: `内容${id}`,
+    deleted: false,
+    created_at: '2026-08-19T00:00:00Z',
+    replies,
   }
 }
 
@@ -74,5 +95,270 @@ describe('PostDetail 无评论场景', () => {
     const empty = wrapper.findComponent(Empty)
     expect(empty.exists()).toBe(true)
     expect(empty.props('title')).toBe('还没有评论')
+  })
+})
+
+describe('PostDetail 分享（Web Share API + 复制兜底）', () => {
+  const postUrl = `${location.origin}/#/post/5`
+
+  // jsdom 无原生 share/clipboard：以 configurable 属性注入，逐用例覆盖成功/取消/报错/不支持
+  function setShare(impl: undefined | ((data: ShareData) => Promise<void>)) {
+    Object.defineProperty(navigator, 'share', { configurable: true, value: impl })
+  }
+  function setClipboard(writeText: ((url: string) => void) | undefined) {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  }
+
+  afterEach(() => {
+    // 还原为未定义，避免污染同文件其他用例
+    setShare(undefined)
+    setClipboard(undefined)
+    vi.clearAllMocks()
+  })
+
+  async function mountAndClickShare() {
+    vi.mocked(api.getPost).mockResolvedValue(mockPost())
+    vi.mocked(api.getComments).mockResolvedValue({ post_id: 5, comments: [] })
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+    const btn = wrapper.findAll('button.dact').find((b) => b.text().includes('分享'))
+    expect(btn).toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('支持原生分享：调用 navigator.share(title,url)，不再复制链接/弹提示', async () => {
+    const shareSpy = vi.fn().mockResolvedValue(undefined)
+    const clipboardSpy = vi.fn()
+    setShare(shareSpy)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(shareSpy).toHaveBeenCalledWith({ title: '人工测试', url: postUrl })
+    expect(clipboardSpy).not.toHaveBeenCalled()
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('用户取消原生分享（AbortError）：静默结束，不复制、不提示', async () => {
+    const shareSpy = vi.fn().mockRejectedValue(Object.assign(new Error('canceled'), { name: 'AbortError' }))
+    const clipboardSpy = vi.fn()
+    setShare(shareSpy)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(shareSpy).toHaveBeenCalled()
+    expect(clipboardSpy).not.toHaveBeenCalled()
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('原生分享抛出其他错误：回退复制链接并提示', async () => {
+    const shareSpy = vi.fn().mockRejectedValue(new Error('NotAllowedError'))
+    const clipboardSpy = vi.fn()
+    setShare(shareSpy)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(clipboardSpy).toHaveBeenCalledWith(postUrl)
+    expect(showToast).toHaveBeenCalledWith('链接已复制')
+  })
+
+  it('不支持原生分享：回退复制链接并提示', async () => {
+    const clipboardSpy = vi.fn()
+    setShare(undefined)
+    setClipboard(clipboardSpy)
+
+    await mountAndClickShare()
+
+    expect(clipboardSpy).toHaveBeenCalledWith(postUrl)
+    expect(showToast).toHaveBeenCalledWith('链接已复制')
+  })
+
+  it('复制链接也失败：toast 直接展示链接兜底', async () => {
+    setShare(undefined)
+    setClipboard(() => {
+      throw new Error('denied')
+    })
+
+    await mountAndClickShare()
+
+    expect(showToast).toHaveBeenCalledWith(`链接：${postUrl}`)
+  })
+})
+
+describe('PostDetail 回复评论：自动展开分支 + 滚动定位新评论（D4）', () => {
+  afterEach(() => {
+    vi.restoreAllMocks() // 还原 document.querySelector spy
+    vi.clearAllMocks() // 清所有 vi.fn()（createComment/getComments/getPost）的 call 历史
+    authState.isLoggedIn = false
+  })
+
+  it('回复二级评论：展开其一级分支、滚动定位新评论并高亮', async () => {
+    authState.isLoggedIn = true
+    const treeBefore: CommentTreeType = { post_id: 5, comments: [makeCommentNode(1, [makeCommentNode(2)])] }
+    const treeAfter: CommentTreeType = {
+      post_id: 5,
+      comments: [makeCommentNode(1, [makeCommentNode(2, [makeCommentNode(999, [], 2)])])],
+    }
+    vi.mocked(api.getPost).mockResolvedValue(mockPost())
+    vi.mocked(api.getComments).mockResolvedValueOnce(treeBefore).mockResolvedValueOnce(treeAfter)
+    vi.mocked(api.createComment).mockResolvedValue({ id: 999 })
+
+    const fakeEl = { scrollIntoView: vi.fn(), classList: { add: vi.fn(), remove: vi.fn() } }
+    const origQS = document.querySelector.bind(document)
+    vi.spyOn(document, 'querySelector').mockImplementation((sel) =>
+      sel === '[data-comment-id="999"]' ? (fakeEl as unknown as Element) : origQS(sel as string),
+    )
+
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+
+    // 触发回复二级评论（id=2）
+    wrapper.findComponent(CommentTree).vm.$emit('reply', 2, 'alice')
+    await wrapper.find('.cinput').setValue('新回复')
+    await wrapper.find('.sbtn').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(api.createComment).toHaveBeenCalledWith({ post_id: 5, parent_id: 2, content: '新回复' })
+    // shallowMount 下 CommentTree 是 stub：不实现 watcher，expandRootId 保持 1 可断言
+    expect(wrapper.findComponent(CommentTree).props('expandRootId')).toBe(1)
+    expect(fakeEl.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+    expect(fakeEl.classList.add).toHaveBeenCalledWith('comment-flash')
+  })
+
+  it('同分支二次回复：expandRootId 再次 = 根 id（闭环可重复触发，F2）', async () => {
+    authState.isLoggedIn = true
+    const treeBefore: CommentTreeType = { post_id: 5, comments: [makeCommentNode(1, [makeCommentNode(2)])] }
+    const treeAfter1: CommentTreeType = {
+      post_id: 5,
+      comments: [makeCommentNode(1, [makeCommentNode(2, [makeCommentNode(999, [], 2)])])],
+    }
+    const treeAfter2: CommentTreeType = {
+      post_id: 5,
+      comments: [
+        makeCommentNode(1, [makeCommentNode(2, [makeCommentNode(999, [], 2), makeCommentNode(1000, [], 2)])]),
+      ],
+    }
+    vi.mocked(api.getPost).mockResolvedValue(mockPost())
+    vi.mocked(api.getComments)
+      .mockResolvedValueOnce(treeBefore)
+      .mockResolvedValueOnce(treeAfter1)
+      .mockResolvedValueOnce(treeAfter2)
+    vi.mocked(api.createComment).mockResolvedValueOnce({ id: 999 }).mockResolvedValueOnce({ id: 1000 })
+    // shallowMount 下无真实评论 DOM：revealComment 的 querySelector 会走 console.warn 分支，静默掉
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+
+    // 第一次回复
+    wrapper.findComponent(CommentTree).vm.$emit('reply', 2, 'alice')
+    await wrapper.find('.cinput').setValue('第一条')
+    await wrapper.find('.sbtn').trigger('click')
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.findComponent(CommentTree).props('expandRootId')).toBe(1)
+
+    // 第二次回复（同分支）
+    wrapper.findComponent(CommentTree).vm.$emit('reply', 2, 'alice')
+    await wrapper.find('.cinput').setValue('第二条')
+    await wrapper.find('.sbtn').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(api.createComment).toHaveBeenCalledTimes(2)
+    expect(wrapper.findComponent(CommentTree).props('expandRootId')).toBe(1)
+  })
+
+  it('兜底-回复：createComment 无 id 时取父节点末子并滚动（F1/Q2）', async () => {
+    authState.isLoggedIn = true
+    const treeBefore: CommentTreeType = { post_id: 5, comments: [makeCommentNode(1, [makeCommentNode(2)])] }
+    const treeAfter: CommentTreeType = {
+      post_id: 5,
+      comments: [makeCommentNode(1, [makeCommentNode(2, [makeCommentNode(999, [], 2)])])],
+    }
+    vi.mocked(api.getPost).mockResolvedValue(mockPost())
+    vi.mocked(api.getComments).mockResolvedValueOnce(treeBefore).mockResolvedValueOnce(treeAfter)
+    vi.mocked(api.createComment).mockResolvedValue({} as unknown as { id: number }) // 无 id
+
+    const fakeEl = { scrollIntoView: vi.fn(), classList: { add: vi.fn(), remove: vi.fn() } }
+    const origQS = document.querySelector.bind(document)
+    vi.spyOn(document, 'querySelector').mockImplementation((sel) =>
+      sel === '[data-comment-id="999"]' ? (fakeEl as unknown as Element) : origQS(sel as string),
+    )
+
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+    wrapper.findComponent(CommentTree).vm.$emit('reply', 2, 'alice')
+    await wrapper.find('.cinput').setValue('新回复')
+    await wrapper.find('.sbtn').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    // 兜底命中 999（父 2 的末子）→ 滚动到它
+    expect(document.querySelector).toHaveBeenCalledWith('[data-comment-id="999"]')
+    expect(fakeEl.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+  })
+
+  it('兜底-顶层：直接回复帖子无 id 时取 tree 末元素（F1/Q2）', async () => {
+    authState.isLoggedIn = true
+    const treeBefore: CommentTreeType = { post_id: 5, comments: [makeCommentNode(1)] }
+    const treeAfter: CommentTreeType = {
+      post_id: 5,
+      comments: [makeCommentNode(1), makeCommentNode(999, [], null)],
+    }
+    vi.mocked(api.getPost).mockResolvedValue(mockPost())
+    vi.mocked(api.getComments).mockResolvedValueOnce(treeBefore).mockResolvedValueOnce(treeAfter)
+    vi.mocked(api.createComment).mockResolvedValue({} as unknown as { id: number }) // 无 id
+
+    const fakeEl = { scrollIntoView: vi.fn(), classList: { add: vi.fn(), remove: vi.fn() } }
+    const origQS = document.querySelector.bind(document)
+    vi.spyOn(document, 'querySelector').mockImplementation((sel) =>
+      sel === '[data-comment-id="999"]' ? (fakeEl as unknown as Element) : origQS(sel as string),
+    )
+
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+    // 直接回复帖子（不设 replyTo）→ parentId null → 产生新一级评论
+    await wrapper.find('.cinput').setValue('新顶层')
+    await wrapper.find('.sbtn').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(api.createComment).toHaveBeenCalledWith({ post_id: 5, parent_id: null, content: '新顶层' })
+    // 顶层回复（parentId null）不展开分支：expandRootId 保持 null
+    expect(wrapper.findComponent(CommentTree).props('expandRootId')).toBe(null)
+    // 兜底命中 999（tree 末元素）→ 滚动到它
+    expect(document.querySelector).toHaveBeenCalledWith('[data-comment-id="999"]')
+    expect(fakeEl.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+  })
+})
+
+describe('PostDetail 正文图片点击放大（#50）', () => {
+  it('点正文第 2 张图 → showImagePreview(images, startPosition=1, showIndex=true)', async () => {
+    vi.mocked(api.getPost).mockResolvedValue({
+      ...mockPost(),
+      content: 'https://a.com/1.png\n\nhttps://a.com/2.png',
+    })
+    vi.mocked(api.getComments).mockResolvedValue({ post_id: 5, comments: [] })
+    const wrapper = shallowMount(PostDetail)
+    await flushPromises()
+    const imgs = wrapper.findAll('.md img.content-img')
+    expect(imgs.length).toBe(2)
+    for (const w of imgs) {
+      Object.defineProperty(w.element, 'complete', { configurable: true, value: true })
+      Object.defineProperty(w.element, 'naturalWidth', { configurable: true, value: 100 })
+    }
+    await imgs[1].trigger('click')
+    await flushPromises()
+    expect(showImagePreview).toHaveBeenCalledWith({
+      images: ['https://a.com/1.png', 'https://a.com/2.png'],
+      startPosition: 1,
+      showIndex: true,
+    })
   })
 })
