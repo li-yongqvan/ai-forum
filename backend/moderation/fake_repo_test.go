@@ -232,7 +232,6 @@ func (f *fakeContent) DeleteComment(ctx context.Context, in DeleteTargetCmd) err
 }
 
 type fakeUsers struct {
-	mu     sync.Mutex
 	users  map[int64]UserRef
 	banned map[int64]bool
 	banErr error
