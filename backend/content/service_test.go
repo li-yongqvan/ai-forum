@@ -835,3 +835,103 @@ func TestListFollowedTopics(t *testing.T) {
 		}
 	})
 }
+
+func TestListFeed_Hot(t *testing.T) {
+	base := time.Now()
+	f, svc := newContentService()
+
+	// p1: 1 赞 = 1 分
+	f.seedPost(1, 1, 1, withCreatedAt(base.Add(-1*time.Hour)))
+	_ = f.CreateLike(ctx(), &Like{UserID: 10, TargetType: "post", TargetID: 1})
+
+	// p2: 3 评论 = 9 分（验证 评论×3 权重 > 赞）
+	f.seedPost(2, 1, 1, withCreatedAt(base.Add(-2*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 2, AuthorID: 10, Content: "a"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 2, AuthorID: 11, Content: "b"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 2, AuthorID: 12, Content: "c"})
+
+	// p3: 窗口内置顶但 0 互动，验证置顶恒顶
+	f.seedPost(3, 1, 1, withPinned(true), withCreatedAt(base.Add(-3*time.Hour)))
+
+	// p4: 超窗帖子，应被剔除
+	f.seedPost(4, 1, 1, withCreatedAt(base.Add(-8*24*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 4, AuthorID: 10, Content: "old"})
+
+	// p5: 超窗置顶帖，验证置顶不豁免窗口（F2 方案 A）
+	f.seedPost(5, 1, 1, withPinned(true), withCreatedAt(base.Add(-10*24*time.Hour)))
+	_ = f.CreateLike(ctx(), &Like{UserID: 10, TargetType: "post", TargetID: 5})
+
+	// p6/p7: 同分（2 评论=6 分），验证 created_at 兜底（新帖在前）
+	f.seedPost(6, 1, 1, withCreatedAt(base.Add(-5*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 6, AuthorID: 10, Content: "x"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 6, AuthorID: 11, Content: "y"})
+	f.seedPost(7, 1, 1, withCreatedAt(base.Add(-4*time.Hour)))
+	_ = f.CreateComment(ctx(), &Comment{PostID: 7, AuthorID: 10, Content: "x"})
+	_ = f.CreateComment(ctx(), &Comment{PostID: 7, AuthorID: 11, Content: "y"})
+
+	// p8: 带 #ai 标签，用于 hot+tag 叠加测试
+	f.seedPost(8, 1, 1, withCreatedAt(base.Add(-6*time.Hour)))
+	_ = f.CreateLike(ctx(), &Like{UserID: 10, TargetType: "post", TargetID: 8})
+	f.tagPosts[8] = []string{"ai"}
+
+	t.Run("权重排序 + 置顶恒顶", func(t *testing.T) {
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", PageSize: 20})
+		if err != nil {
+			t.Fatalf("ListFeed(hot) error = %v", err)
+		}
+		// 期望顺序：p3(置顶) > p2(9分) > p7(同分新) > p6(同分旧) > p1(1分) > p8(1分更旧)
+		want := []int64{3, 2, 7, 6, 1, 8}
+		got := make([]int64, len(views))
+		for i, v := range views {
+			got[i] = v.ID
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("排序 = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("7 天窗口外帖子剔除（含超窗置顶）", func(t *testing.T) {
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range views {
+			if v.ID == 4 || v.ID == 5 {
+				t.Errorf("超窗帖 %d 不应出现在热门段", v.ID)
+			}
+		}
+	})
+
+	t.Run("分页", func(t *testing.T) {
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", Page: 2, PageSize: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []int64{7, 6}
+		got := make([]int64, len(views))
+		for i, v := range views {
+			got[i] = v.ID
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("第2页 = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("游客可访问", func(t *testing.T) {
+		_, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", ViewerID: 0, PageSize: 20})
+		if err != nil {
+			t.Errorf("游客访问 hot 报错 = %v, want nil", err)
+		}
+	})
+
+	t.Run("hot + tag 过滤叠加", func(t *testing.T) {
+		tag := "ai"
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "hot", Tag: &tag, PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 8 {
+			t.Errorf("hot+ai = %+v, want [8]", views)
+		}
+	})
+}

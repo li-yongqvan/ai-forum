@@ -176,11 +176,21 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 				continue
 			}
 		}
+		if in.Feed == "hot" && p.CreatedAt.Before(time.Now().Add(-7*24*time.Hour)) {
+			// #61 热门流：7 天窗口（镜像 gorm ListPosts 的 SQL 语义）
+			continue
+		}
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].IsPinned != out[j].IsPinned {
 			return out[i].IsPinned
+		}
+		if in.Feed == "hot" {
+			si, sj := f.hotScore(out[i].ID), f.hotScore(out[j].ID)
+			if si != sj {
+				return si > sj
+			}
 		}
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
@@ -193,6 +203,27 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		out = out[in.Offset:]
 	}
 	return out, nil
+}
+
+// commentWeight 是 #61 热度公式中「评论」相对「赞」的权重。
+// 注意：gorm_repo.go 的 SQL 表达式也硬编码了同一权重（×3），两边需同步修改。
+const commentWeight = 3
+
+// hotScore 计算帖子热度分：赞×1 + 评论×commentWeight（#61）。
+// 与 gorm ListPosts 的 SQL 聚合同语义：likes 硬删、comments 排除软删。
+func (f *fakeRepo) hotScore(postID int64) int {
+	likes, comments := 0, 0
+	for _, l := range f.likes {
+		if l.TargetType == "post" && l.TargetID == postID {
+			likes++
+		}
+	}
+	for _, c := range f.comments {
+		if c.PostID == postID && !c.DeletedAt.Valid {
+			comments++
+		}
+	}
+	return likes + commentWeight*comments
 }
 
 func (f *fakeRepo) DeletePost(ctx context.Context, id int64) error {

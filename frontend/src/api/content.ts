@@ -25,7 +25,7 @@ export function listTopics(boardId?: number) {
 // ---- 帖子 ----
 
 export interface ListPostsParams {
-  tab?: 'all' | 'follow'
+  tab?: 'all' | 'hot' | 'follow'
   boardId?: number
   topicId?: number
   authorId?: number
