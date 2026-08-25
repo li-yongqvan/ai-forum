@@ -36,3 +36,15 @@ type ModerationAction struct {
 }
 
 func (ModerationAction) TableName() string { return "moderation.moderation_actions" }
+
+// ModerationActionView 是审计日志只读读模型（#60）。
+type ModerationActionView struct {
+	ID               int64     `json:"id"`
+	ModeratorID      int64     `json:"moderator_id"`
+	ModeratorUsername string   `json:"moderator_username,omitempty"` // enrich（UserGateway），best-effort
+	Action           string    `json:"action"`
+	TargetType       string    `json:"target_type"`
+	TargetID         int64     `json:"target_id"`
+	Reason           string    `json:"reason"`
+	CreatedAt        time.Time `json:"created_at"`
+}

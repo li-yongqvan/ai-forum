@@ -164,6 +164,7 @@ func NewEngine(cfg config.Config, jwtMgr *auth.Manager, userSvc user.Service, co
 		mod.GET("/moderation/reports", mh.ListReports)
 		mod.GET("/moderation/reports/count", mh.CountReports)
 		mod.POST("/moderation/reports/:id/handle", mh.HandleReport)
+		mod.GET("/moderation/actions", mh.ListActions) // #60 只读审计端点（mod+）
 
 		// 治理管理（admin-only：#9 §5.0 封禁/解封仅 admin）
 		admin := writers.Group("")

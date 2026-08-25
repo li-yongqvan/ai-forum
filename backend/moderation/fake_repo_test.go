@@ -145,6 +145,38 @@ func (f *fakeRepo) AppendAction(ctx context.Context, a *ModerationAction) error 
 	return nil
 }
 
+// ListActions 按查询条件过滤，按创建时间倒序（测试不保证稳定 tie-break，因为 fake 时间戳相同）。
+func (f *fakeRepo) ListActions(ctx context.Context, in ListActionsQuery) ([]*ModerationAction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	filtered := make([]*ModerationAction, 0, len(f.actions))
+	for _, a := range f.actions {
+		if in.TargetType != "" && a.TargetType != in.TargetType {
+			continue
+		}
+		if in.TargetID > 0 && a.TargetID != in.TargetID {
+			continue
+		}
+		if in.Action != "" && a.Action != in.Action {
+			continue
+		}
+		if in.ModeratorID > 0 && a.ModeratorID != in.ModeratorID {
+			continue
+		}
+		cp := *a
+		filtered = append(filtered, &cp)
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].CreatedAt.After(filtered[j].CreatedAt) })
+	if in.Offset > len(filtered) {
+		in.Offset = len(filtered)
+	}
+	out := filtered[in.Offset:]
+	if in.Limit > 0 && in.Limit < len(out) {
+		out = out[:in.Limit]
+	}
+	return out, nil
+}
+
 // Tx 直通执行（测试只验证行为与事务内写入，不验证回滚机制）。
 func (f *fakeRepo) Tx(ctx context.Context, fn func(Repo) error) error {
 	return fn(f)
@@ -200,12 +232,14 @@ func (f *fakeContent) DeleteComment(ctx context.Context, in DeleteTargetCmd) err
 }
 
 type fakeUsers struct {
-	mu    sync.Mutex
-	users map[int64]UserRef
+	mu     sync.Mutex
+	users  map[int64]UserRef
+	banned map[int64]bool
+	banErr error
 }
 
 func newFakeUsers() *fakeUsers {
-	return &fakeUsers{users: map[int64]UserRef{}}
+	return &fakeUsers{users: map[int64]UserRef{}, banned: map[int64]bool{}}
 }
 
 func (f *fakeUsers) add(id int64, name string) {
@@ -218,6 +252,23 @@ func (f *fakeUsers) GetUserView(ctx context.Context, id int64) (UserRef, error) 
 		return UserRef{}, ErrNotFound
 	}
 	return u, nil
+}
+
+func (f *fakeUsers) BanUser(ctx context.Context, in BanUserCmd) error {
+	if f.banErr != nil {
+		return f.banErr
+	}
+	if _, ok := f.users[in.TargetID]; !ok {
+		return ErrNotFound
+	}
+	if in.TargetID == in.OperatorID {
+		return ErrSelfBan
+	}
+	if f.banned[in.TargetID] {
+		return ErrAlreadyBanned
+	}
+	f.banned[in.TargetID] = true
+	return nil
 }
 
 type fakeNotifier struct {

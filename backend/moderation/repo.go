@@ -20,6 +20,9 @@ type Repo interface {
 
 	AppendAction(ctx context.Context, a *ModerationAction) error
 
+	// ListActions 审计日志只读查询（#60）：按查询条件 + 分页返回，结果按 created_at DESC, id DESC 排序。
+	ListActions(ctx context.Context, in ListActionsQuery) ([]*ModerationAction, error)
+
 	// Tx 提供事务边界（仿 user.Repo.Tx；HandleReport 审计+状态原子提交，#33 S2）。
 	Tx(ctx context.Context, fn func(Repo) error) error
 }

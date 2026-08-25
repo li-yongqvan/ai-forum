@@ -320,7 +320,7 @@ docker compose ps
 
 ## 5. 运维闭环（定稿）
 
-- **备份**：`crontab -e` 用 liyongquan 自己的 cron（无需 sudo）：
+- **本机备份**：`crontab -e` 用 liyongquan 自己的 cron（无需 sudo）：
 
 ```cron
 # 每晚 3 点 pg_dump，保留 14 份
@@ -330,6 +330,22 @@ docker compose ps
 ```
 
   单点机器，建议再定期把 dump 拉离本机（本地下载或对象存储）。
+- **异地备份（#60）**：新增 `scripts/backup-offsite.sh` 把 `~/backups` 已有快照派发到可配置目标，目标可插拔（`local://`/`scp://`/`oss://`）。
+  - 配置：复制 `scripts/backup.conf.example` 到服务器 `$HOME/backup.conf`，按需改 `BACKUP_DEST` / `BACKUP_RETENTION` / `BACKUP_SRC`。
+  - 短期接 `local://` 同机目录（默认 `~/backups-offsite`），先通电验证；`scp://` 与 `oss://` 本期占位，长期目标确定后补实现。
+  - 验证步骤：
+    ```bash
+    # 服务器：dry-run 先看将复制/删除哪些文件
+    bash ~/ai-forum/scripts/backup-offsite.sh --dry-run
+    # 真实跑一次（ retention 会按 BACKUP_RETENTION 修剪目标目录）
+    bash ~/ai-forum/scripts/backup-offsite.sh
+    ```
+  - 挂 cron（dry-run 验证通过后）：
+    ```cron
+    # 每天 3:30 把 ~/backups 同步到异地目标
+    30 3 * * * bash ~/ai-forum/scripts/backup-offsite.sh >> ~/backups/offsite.log 2>&1
+    ```
+  - 换目标只需改 `$HOME/backup.conf` 里的 `BACKUP_DEST`，无需改脚本/仓库。
 - **日志**：compose 已配 json-file 轮转（10m×3，main 现状 ✓，web 同配置）。
 - **健康检查**：api 已有 ✓；postgres 补 `pg_isready`；api/web 的 `depends_on` 均 `condition: service_healthy`。
 - **重启恢复**：三服务均 `restart: unless-stopped`；宿主机重启后由 dockerd 自启拉起（首次验证一次 `docker compose ps`）。
@@ -369,9 +385,12 @@ cat ~/.ssh/ai-forum-repo.pub
    - **前置：基础镜像已预灌**——在能连 Docker Hub 的机器 `docker pull nginx:1.27-alpine postgres:16-alpine`，再 `docker save nginx:1.27-alpine postgres:16-alpine | ssh liyongquan@122.51.233.225 docker load`（**2026-08-19 已执行**，服务器本地已有，见 §2.1）。
    - **v3.2 追加前置（#43，2026-08-24）**：服务器本地构建还需预灌 `golang:1.26-alpine` + `alpine:3.21` + `docker/dockerfile:1`（builder/frontend；Docker Hub 被墙，本机若拉不到走镜像源 `docker pull m.daocloud.io/docker.io/library/golang:1.26-alpine` 再 retag）；并在 merge 前做一次**试构建**（`cd ~/ai-forum && docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api`，实测耗时/内存、确认 frontend 免拉）。
 7. `DEPLOY_ENABLED` 置 `true`，push main 做全链路验证：`http://122.51.233.225:8888/healthz` + 前端 + 发图。
-8. 配 §5 备份 cron。
+8. 合入 #60 后服务器验证：
+   - `curl http://122.51.233.225:8888/healthz`
+   - 管理员账号造一次 `ban_user` 或 `delete_post` → `GET /api/v1/moderation/actions?target_id=xxx` 返回对应审计行 + moderator_username。
+   - `bash ~/ai-forum/scripts/backup-offsite.sh --dry-run` 预演通过 → 用户确认后挂 §5 cron。
 
-**开放项**（唯一剩余）：备份异地存放方案（有对象存储/另一台机器再补）。
+**开放项**（已解决）：备份异地存放方案见 §5「异地备份（#60）」。
 
 ## 8. 否决记录（评审留存）
 

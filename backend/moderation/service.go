@@ -57,13 +57,13 @@ type ReportView struct {
 }
 
 // HandleReportCmd 处理举报（IA v2 §5.6 闭环）。
-// 权限动作集（#9 §5.0）：moderator 动作集不含封禁；admin 全动作集——由调用方（httpapi）按角色拦截，
-// 服务端再校验一次（F3：OperatorRole 从 JWT claims 注入）。
+// 权限动作集（#9 §5.0）：moderator 动作集为 dismiss/delete_post/delete_comment/warn；admin 额外可用 ban_user。
+// 服务端二次鉴权（F3：OperatorRole 从 JWT claims 注入）。
 type HandleReportCmd struct {
 	ReportID     int64
 	HandlerID    int64
 	OperatorRole string // user | moderator | admin（F3）
-	Action       string // Action* 常量之一（ban/unban 本票拒绝）
+	Action       string // Action* 常量之一（含 #60 ban_user）
 	Note         string // 处理备注（附加到 moderation_actions.reason，≤500，F5）
 }
 
@@ -72,6 +72,22 @@ type ListReportsQuery struct {
 	Status string // 空 = 全部；默认 pending 由 handler 层补
 	Limit  int
 	Offset int
+}
+
+// ListActionsQuery 审计日志只读查询（#60）。
+type ListActionsQuery struct {
+	TargetType  string // 空 = 不过滤
+	TargetID    int64  // 0 = 不过滤
+	Action      string // 空 = 不过滤
+	ModeratorID int64  // 0 = 不过滤
+	Limit       int
+	Offset      int
+}
+
+// BanUserCmd 治理域经 UserGateway 调用 user 域封禁的最小命令（S1：moderation 不 import user）。
+type BanUserCmd struct {
+	OperatorID int64
+	TargetID   int64
 }
 
 // RecordActionCmd 独立治理审计命令（#34：ban/unban 直接治理动作，独立于举报流程）。
@@ -112,9 +128,11 @@ type UserRef struct {
 	Username string
 }
 
-// UserGateway 供治理域读用户（enrich 举报人/目标名、user 目标存在性）。
+// UserGateway 供治理域读用户与执行封禁（S1： moderation 不 import user）。
 type UserGateway interface {
 	GetUserView(ctx context.Context, id int64) (UserRef, error)
+	// BanUser 调 user 域封禁；错误由 adapter 翻译为 moderation 哨兵错误（ErrSelfBan/ErrCannotBanAdmin/ErrAlreadyBanned/ErrNotFound）。
+	BanUser(ctx context.Context, in BanUserCmd) error
 }
 
 // NotificationCmd 镜像 notify.CreateNotificationCmd 的最小子集（快照由调用方算好，#4 D4）。
@@ -140,6 +158,10 @@ var (
 	ErrDuplicatePending = errors.New("moderation: 同一举报者 pending 期内重复举报")
 	ErrInvalidAction    = errors.New("moderation: 非法处理动作或权限越界")
 	ErrRateLimited      = errors.New("moderation: 举报过于频繁，请稍后再试")
+	// #60 弹窗封禁经 UserGateway 翻译 user 域错误（adapter 负责，不 import user）。
+	ErrSelfBan        = errors.New("moderation: 不能封禁自己")
+	ErrCannotBanAdmin = errors.New("moderation: 不能封禁管理员")
+	ErrAlreadyBanned  = errors.New("moderation: 该用户已被封禁")
 )
 
 // ---- 举报频控（#53 D3：同一举报人时间窗口内 ≤N 次，全局跨目标） ----
@@ -160,17 +182,7 @@ func validTargetType(t string) bool { return t == "user" || t == "post" || t == 
 
 func canModerate(role string) bool { return role == "moderator" || role == "admin" }
 
-// validAction 本票动作集：dismiss/delete_post/delete_comment/warn；ban/unban 留 #34（服务端拦截）。
-func validAction(a string) bool {
-	switch a {
-	case ActionDismiss, ActionDeletePost, ActionDeleteComment, ActionWarn:
-		return true
-	default:
-		return false
-	}
-}
-
-// validRecordAction 独立审计白名单：仅 ban_user/unban_user（#34；不触碰 validAction，HandleReport 仍拒封禁）。
+// validRecordAction 独立审计白名单：仅 ban_user/unban_user（#34）。
 func validRecordAction(a string) bool { return a == ActionBan || a == ActionUnban }
 
 func statusFor(action string) string {
@@ -187,6 +199,8 @@ func conclusionFor(action string) string {
 		return "内容已删除"
 	case ActionWarn:
 		return "已警告违规用户"
+	case ActionBan:
+		return "已封禁用户"
 	default: // ActionDismiss
 		return "未采取处理"
 	}
@@ -208,6 +222,8 @@ type Service interface {
 	HandleReport(ctx context.Context, in HandleReportCmd) error
 	ListReports(ctx context.Context, in ListReportsQuery) ([]ReportView, error)
 	CountReports(ctx context.Context, status string) (int64, error)
+	// ListActions 审计日志只读查询（#60）。
+	ListActions(ctx context.Context, in ListActionsQuery) ([]ModerationActionView, error)
 	// RecordAction 追加独立治理审计（#34：ban/unban 直接动作，reason 必填 ≤500，TargetType 恒 user）。
 	RecordAction(ctx context.Context, in RecordActionCmd) error
 }
@@ -297,8 +313,17 @@ func (s *service) CreateReport(ctx context.Context, in CreateReportCmd) (int64, 
 
 // HandleReport 处理举报（O1 序列：网关副作用在事务外 → moderation 写单事务 → 提交后事务外发通知）。
 func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
-	// 角色门 + 动作门（服务端二次鉴权，D6/F3）
-	if !canModerate(in.OperatorRole) || !validAction(in.Action) {
+	// 角色门 + 动作门：收敛为单个 switch（Q1），只留一张白名单。
+	switch in.Action {
+	case ActionBan:
+		if in.OperatorRole != "admin" {
+			return ErrInvalidAction
+		}
+	case ActionDismiss, ActionDeletePost, ActionDeleteComment, ActionWarn:
+		if !canModerate(in.OperatorRole) {
+			return ErrInvalidAction
+		}
+	default:
 		return ErrInvalidAction
 	}
 	if len([]rune(in.Note)) > 500 { // F5：moderation_actions.reason VARCHAR(500)，领域不变量兜底
@@ -323,8 +348,8 @@ func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
 		}
 	}
 
-	// ---- 事务外：内容域副作用（O1：不在持有 moderation 事务期间调用内容网关） ----
-	// 审计目标：delete 记被举报内容；warn 记被举报内容作者（target_type=user）。
+	// ---- 事务外：副作用（O1：不在持有 moderation 事务期间调用外部网关） ----
+	// 审计目标：delete 记被举报内容；warn 记被举报内容作者（target_type=user）；ban 记被封用户（target_type=user）。
 	auditType, auditID := r.TargetType, r.TargetID
 	switch in.Action {
 	case ActionDeletePost, ActionDeleteComment:
@@ -344,6 +369,32 @@ func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
 			return err // 目标已不存在则无法归责到作者，保持 pending 由处理人改判
 		}
 		auditType, auditID = "user", ref.AuthorID
+	case ActionBan:
+		// F3：ban 原因必填；空 reason 会留下无原因审计，违反治理留痕意图。
+		reason := strings.TrimSpace(in.Note)
+		if reason == "" {
+			return ErrInvalidAction
+		}
+		// Q3：ban 优先用 TargetAuthorID 快照（内容已删仍可定位作者），与 warn 的 ResolveTarget 刻意不同。
+		var banTargetID int64
+		switch r.TargetType {
+		case "user":
+			banTargetID = r.TargetID
+		case "post", "comment":
+			if r.TargetAuthorID != nil {
+				banTargetID = *r.TargetAuthorID
+			} else {
+				ref, err := s.content.ResolveTarget(ctx, r.TargetType, r.TargetID)
+				if err != nil {
+					return err // 无快照且目标已删 → 无法定位作者，保持 pending
+				}
+				banTargetID = ref.AuthorID
+			}
+		}
+		if err := s.users.BanUser(ctx, BanUserCmd{OperatorID: in.HandlerID, TargetID: banTargetID}); err != nil {
+			return err // ErrSelfBan/ErrCannotBanAdmin/ErrAlreadyBanned/ErrNotFound 透传
+		}
+		auditType, auditID = "user", banTargetID
 	}
 
 	// ---- 单事务：append 审计 + 改状态（S2/F4） ----
@@ -351,7 +402,7 @@ func (s *service) HandleReport(ctx context.Context, in HandleReportCmd) error {
 		if in.Action != ActionDismiss {
 			reason := strings.TrimSpace(in.Note)
 			if reason == "" {
-				reason = r.Reason // 无备注时留原因作审计语义
+				reason = r.Reason // 无备注时留原因作审计语义（ban 已在前置校验非空，不会走到这里）
 			}
 			if err := tx.AppendAction(ctx, &ModerationAction{
 				ModeratorID: in.HandlerID,
@@ -410,10 +461,10 @@ func (s *service) notifyReportOutcome(ctx context.Context, r *Report, action str
 	}
 }
 
-// notifiesReportedUser #53 D2：哪些处理动作要通知被举报人（dismiss 不打扰；warn 也通知，反转 #33 O4）。
+// notifiesReportedUser #53 D2：哪些处理动作要通知被举报人（dismiss 不打扰；warn/ban 也通知）。
 func notifiesReportedUser(action string) bool {
 	switch action {
-	case ActionDeletePost, ActionDeleteComment, ActionWarn:
+	case ActionDeletePost, ActionDeleteComment, ActionWarn, ActionBan:
 		return true
 	default:
 		return false
@@ -427,6 +478,8 @@ func handledConclusionFor(action, reason string) string {
 		return "你的内容因「" + reason + "」被举报，已删除"
 	case ActionWarn:
 		return "你因「" + reason + "」被举报，已警告"
+	case ActionBan:
+		return "你因「" + reason + "」被举报，已被封禁"
 	default:
 		// 防御：notifiesReportedUser 白名单外动作不调用本函数，但兜底不产生空标题通知（评审 Standards #1）
 		return "你的内容已被处理"
@@ -481,6 +534,31 @@ func (s *service) targetTitle(ctx context.Context, r *Report) string {
 		}
 	}
 	return ""
+}
+
+// ListActions 审计日志只读查询（#60）：逐行 best-effort enrich 操作人用户名（仿 ListReports）。
+func (s *service) ListActions(ctx context.Context, in ListActionsQuery) ([]ModerationActionView, error) {
+	acts, err := s.repo.ListActions(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]ModerationActionView, 0, len(acts))
+	for _, a := range acts {
+		v := ModerationActionView{
+			ID:            a.ID,
+			ModeratorID:   a.ModeratorID,
+			Action:        a.Action,
+			TargetType:    a.TargetType,
+			TargetID:      a.TargetID,
+			Reason:        a.Reason,
+			CreatedAt:     a.CreatedAt,
+		}
+		if u, err := s.users.GetUserView(ctx, a.ModeratorID); err == nil {
+			v.ModeratorUsername = u.Username
+		}
+		views = append(views, v)
+	}
+	return views, nil
 }
 
 // CountReports 队列计数（Me.vue 待处理徽章，S8）。

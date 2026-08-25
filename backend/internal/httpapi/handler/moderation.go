@@ -35,6 +35,10 @@ func respondModerationError(c *gin.Context, err error) {
 		respondError(c, http.StatusBadRequest, "操作不合法")
 	case errors.Is(err, moderation.ErrRateLimited):
 		respondError(c, http.StatusTooManyRequests, "举报过于频繁，请稍后再试")
+	case errors.Is(err, moderation.ErrSelfBan), errors.Is(err, moderation.ErrCannotBanAdmin):
+		respondError(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, moderation.ErrAlreadyBanned):
+		respondError(c, http.StatusConflict, "该用户已被封禁")
 	default:
 		respondError(c, http.StatusInternalServerError, "服务器内部错误")
 	}
@@ -105,6 +109,36 @@ func (h *ModerationHandler) CountReports(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"count": n})
+}
+
+// ListActions GET /api/v1/moderation/actions?target_type=&target_id=&action=&moderator_id=&page=&page_size=（mod 组，#60）
+func (h *ModerationHandler) ListActions(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	targetID, _ := strconv.ParseInt(c.Query("target_id"), 10, 64)
+	moderatorID, _ := strconv.ParseInt(c.Query("moderator_id"), 10, 64)
+	views, err := h.svc.ListActions(c.Request.Context(), moderation.ListActionsQuery{
+		TargetType:  c.Query("target_type"),
+		TargetID:    targetID,
+		Action:      c.Query("action"),
+		ModeratorID: moderatorID,
+		Limit:       pageSize,
+		Offset:      (page - 1) * pageSize,
+	})
+	if err != nil {
+		respondModerationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
 }
 
 // HandleReport POST /api/v1/moderation/reports/:id/handle（mod 组；服务端二次鉴权 D6/F3）
