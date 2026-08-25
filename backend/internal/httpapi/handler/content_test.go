@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/li-yongqvan/ai-forum/backend/internal/testutil"
@@ -592,5 +593,123 @@ func TestFavoritesList(t *testing.T) {
 	// 游客 → 401
 	if w := doJSON(t, r, http.MethodGet, "/api/v1/favorites", nil, ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("游客 GET /favorites = %d, want 401", w.Code)
+	}
+}
+
+// TestListPostsHot 验证 #61 热门流 SQL 排序、置顶×窗口、列遮蔽防护、过滤叠加。
+func TestListPostsHot(t *testing.T) {
+	gdb := testutil.SetupPG(t)
+	r := newEngine(t, gdb)
+
+	alice := registerUser(t, r, gdb, "alice", "alice@x.edu", "CODE-H1")
+	registerUser(t, r, gdb, "bob", "bob@x.edu", "CODE-H2")
+	makeModerator(t, gdb, "bob")
+	mod := login(t, r, "bob")
+
+	now := time.Now()
+
+	// p1: 1 赞（1 分）
+	p1 := createPost(t, r, alice.Token, 1, "p1 like")
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p1.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like p1 = %d", w.Code)
+	}
+
+	// p2: 3 评论（9 分），热度最高
+	p2 := createPost(t, r, alice.Token, 1, "p2 comments")
+	for i := 0; i < 3; i++ {
+		if w := doJSON(t, r, http.MethodPost, "/api/v1/comments", map[string]any{"post_id": p2.ID, "content": fmt.Sprintf("c%d", i)}, alice.Token); w.Code != http.StatusCreated {
+			t.Fatalf("comment p2 = %d", w.Code)
+		}
+	}
+
+	// p3: 0 互动，窗口内置顶 → 应排第一
+	p3 := createPost(t, r, alice.Token, 1, "p3 pinned")
+	if w := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/v1/posts/%d/pin", p3.ID), nil, mod.Token); w.Code != http.StatusOK {
+		t.Fatalf("pin p3 = %d", w.Code)
+	}
+
+	// p4: 8 天前 + 1 评论 → 应被窗口剔除
+	p4 := createPost(t, r, alice.Token, 1, "p4 old")
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/comments", map[string]any{"post_id": p4.ID, "content": "old"}, alice.Token); w.Code != http.StatusCreated {
+		t.Fatalf("comment p4 = %d", w.Code)
+	}
+	if err := gdb.Exec(`UPDATE content.posts SET created_at = ? WHERE id = ?`, now.Add(-8*24*time.Hour), p4.ID).Error; err != nil {
+		t.Fatalf("backdate p4: %v", err)
+	}
+
+	// p5: 10 天前 + 置顶 + 高热度 → 验证置顶不豁免窗口（F2 方案 A）
+	p5 := createPost(t, r, alice.Token, 1, "p5 pinned old")
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p5.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like p5 = %d", w.Code)
+	}
+	for i := 0; i < 5; i++ {
+		if w := doJSON(t, r, http.MethodPost, "/api/v1/comments", map[string]any{"post_id": p5.ID, "content": fmt.Sprintf("c%d", i)}, alice.Token); w.Code != http.StatusCreated {
+			t.Fatalf("comment p5 = %d", w.Code)
+		}
+	}
+	if w := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/v1/posts/%d/pin", p5.ID), nil, mod.Token); w.Code != http.StatusOK {
+		t.Fatalf("pin p5 = %d", w.Code)
+	}
+	if err := gdb.Exec(`UPDATE content.posts SET created_at = ? WHERE id = ?`, now.Add(-10*24*time.Hour), p5.ID).Error; err != nil {
+		t.Fatalf("backdate p5: %v", err)
+	}
+
+	// p6: 带 #ai 标签 + 1 赞，用于 hot+tag 叠加
+	w6 := doJSON(t, r, http.MethodPost, "/api/v1/posts", map[string]any{"board_id": 1, "title": "p6 tag", "content": "聊聊 #ai"}, alice.Token)
+	if w6.Code != http.StatusCreated {
+		t.Fatalf("create p6 = %d, body=%s", w6.Code, w6.Body.String())
+	}
+	var p6 postView
+	_ = json.Unmarshal(w6.Body.Bytes(), &p6)
+	if w := doJSON(t, r, http.MethodPost, "/api/v1/likes", map[string]any{"target_type": "post", "target_id": p6.ID}, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("like p6 = %d", w.Code)
+	}
+
+	// 验证热门段顺序（游客访问）
+	w := doJSON(t, r, http.MethodGet, "/api/v1/posts?tab=hot", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET hot = %d, body=%s", w.Code, w.Body.String())
+	}
+	var hot listResp
+	if err := json.Unmarshal(w.Body.Bytes(), &hot); err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []int64{p3.ID, p2.ID, p6.ID, p1.ID}
+	gotIDs := make([]int64, len(hot.Items))
+	for i, v := range hot.Items {
+		gotIDs[i] = v.ID
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Errorf("hot 顺序 = %v, want %v", gotIDs, wantIDs)
+	}
+
+	// 列遮蔽回归：断言返回字段来自 posts 表，未被 JOIN 列覆盖
+	for _, v := range hot.Items {
+		if v.ID == p1.ID && v.AuthorName != "alice" {
+			t.Errorf("p1 列遮蔽: author=%q", v.AuthorName)
+		}
+		if v.ID == p3.ID && !v.IsPinned {
+			t.Errorf("p3 列遮蔽: is_pinned=%v", v.IsPinned)
+		}
+	}
+
+	// 超窗帖 p4/p5 不出现
+	for _, v := range hot.Items {
+		if v.ID == p4.ID || v.ID == p5.ID {
+			t.Errorf("超窗帖 %d 不应出现在热门段", v.ID)
+		}
+	}
+
+	// hot + tag 叠加
+	w2 := doJSON(t, r, http.MethodGet, "/api/v1/posts?tab=hot&tag=ai", nil, "")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET hot+tag = %d, body=%s", w2.Code, w2.Body.String())
+	}
+	var hotTag listResp
+	if err := json.Unmarshal(w2.Body.Bytes(), &hotTag); err != nil {
+		t.Fatal(err)
+	}
+	if len(hotTag.Items) != 1 || hotTag.Items[0].ID != p6.ID {
+		t.Errorf("hot+tag = %+v, want [p6]", hotTag.Items)
 	}
 }

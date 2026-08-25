@@ -4,7 +4,7 @@ import "context"
 
 // PostQuery 列表查询参数（feed / 板块 / 话题 / 作者 / 标签 复用，分页统一 limit/offset）。
 type PostQuery struct {
-	Feed             string // all | follow
+	Feed             string // all | hot | follow（hot = 7 天窗口热度排序，#61）
 	AuthorID         *int64
 	BoardID          *int64
 	TopicID          *int64

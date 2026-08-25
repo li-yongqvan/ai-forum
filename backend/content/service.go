@@ -110,7 +110,7 @@ type ToggleCmd struct {
 }
 
 type ListFeedQuery struct {
-	Tab      string // all | follow
+	Tab      string // all | hot | follow（#61：hot = 热度流，公开，游客可见）
 	ViewerID int64  // 0 = 游客
 	AuthorID *int64 // 按作者过滤（用户主页/我的帖子）
 	BoardID  *int64
@@ -524,6 +524,9 @@ func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, e
 	switch in.Tab {
 	case "", "all":
 		q.Feed = "all"
+	case "hot":
+		// #61 热门流：公开、游客可见；排序在 repo 层（赞×1+评论×3，7 天窗口）
+		q.Feed = "hot"
 	case "follow":
 		if in.ViewerID == 0 {
 			return nil, ErrAuthRequired

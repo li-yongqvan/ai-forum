@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -82,7 +83,7 @@ func (r *gormRepo) GetPostByID(ctx context.Context, id int64) (*Post, error) {
 	return &p, nil
 }
 
-// ListPosts 信息流/板块/话题/作者列表查询。排序：#9 §5.2「置顶优先 + 时间倒序」（无 pinned_at 列，置顶帖按创建时间排序）。
+// ListPosts 信息流/板块/话题/作者列表查询。排序：默认 #9 §5.2「置顶优先 + 时间倒序」；Feed=hot 时 #61「置顶优先 + 热度降序（赞×1+评论×3）+ 时间倒序兜底」。
 func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
 	q := r.db.WithContext(ctx).Model(&Post{})
 	if in.AuthorID != nil {
@@ -103,7 +104,21 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		q = q.Where("author_id IN ? OR board_id IN ? OR topic_id IN ?",
 			in.FollowedUserIDs, in.FollowedBoardIDs, in.FollowedTopicIDs)
 	}
-	q = q.Order("is_pinned DESC").Order("created_at DESC")
+	if in.Feed == "hot" {
+		// #61 热门流：7 天窗口，热度分 = 赞×1 + 评论×3（likes/comments 不落库，LEFT JOIN 现场聚合）；
+		// 窗口内帖子随热度排序，置顶帖仍恒顶（与全部流行为一致）。评论软删由子查询 deleted_at IS NULL 排除。
+		// 注意：子查询必须预聚合；若直接 JOIN 原始 likes/comments 两表，会因笛卡尔积导致计数互乘。
+		q = q.Select("content.posts.*") // 限定主表列，防 JOIN 表列遮蔽（F8）
+		q = q.Where("created_at >= ?", time.Now().Add(-7*24*time.Hour))
+		q = q.Joins("LEFT JOIN (SELECT target_id AS pid, COUNT(*) AS like_cnt FROM content.likes WHERE target_type = 'post' GROUP BY target_id) hot_likes ON hot_likes.pid = content.posts.id")
+		q = q.Joins("LEFT JOIN (SELECT post_id AS pid, COUNT(*) AS cmt_cnt FROM content.comments WHERE deleted_at IS NULL GROUP BY post_id) hot_comments ON hot_comments.pid = content.posts.id")
+	}
+	q = q.Order("is_pinned DESC")
+	if in.Feed == "hot" {
+		// 热度分降序；同分按时间倒序兜底。详见 fake_repo_test.go 的 commentWeight 常量。
+		q = q.Order("(COALESCE(hot_likes.like_cnt, 0) + 3 * COALESCE(hot_comments.cmt_cnt, 0)) DESC")
+	}
+	q = q.Order("created_at DESC")
 	if in.Limit > 0 {
 		q = q.Limit(in.Limit)
 	}
