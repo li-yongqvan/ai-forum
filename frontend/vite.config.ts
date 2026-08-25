@@ -34,11 +34,13 @@ export default defineConfig({
     }),
   ],
   server: {
-    // 绑定所有网卡（手机经局域网 IP 访问，如 http://192.168.0.115:5173）
+    // 绑定所有网卡（手机经局域网 IP 访问，如 http://192.168.0.115:5176）
     host: true,
+    // 5173 让位给用户新项目（2026-08-25）：本地 dev 固定用 5176，勿用 5173
+    port: 5176,
     proxy: {
       // changeOrigin:false 透传前端 Host（与生产 nginx 的 proxy_set_header Host $host 一致）：
-      // 后端拼图片 URL 用 Host，必须保持为访问入口（localhost:5173 / 192.168.0.115:5173），
+      // 后端拼图片 URL 用 Host，必须保持为访问入口（localhost:5176 / 192.168.0.115:5176），
       // 否则会拼成后端地址（localhost:8080）导致手机端图片 404
       '/api': { target: apiTarget, changeOrigin: false },
       // #12 dev：上传图片 URL 带前端 Host，须一并代理到本地 Go（开发态由 Go 托管静态）
