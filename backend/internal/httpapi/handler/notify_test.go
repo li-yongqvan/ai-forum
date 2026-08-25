@@ -214,10 +214,6 @@ type messageResp struct {
 	IsRead     bool   `json:"is_read"`
 }
 
-type messageList struct {
-	Items []messageResp `json:"items"`
-}
-
 type conversationList struct {
 	Items []struct {
 		PeerID      int64       `json:"peer_id"`
