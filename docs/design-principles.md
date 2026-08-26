@@ -48,3 +48,30 @@ service（部署单元）、API（传输协议名词）、boundary（DDD 有界�
 
 - **必须**：术语与反义词禁令（设计讨论 / 审查 / README / 注释）；Interface README（有外部调用方时）；审查检查清单。
 - **建议**：README 中性能特征的完备性；内部 seam 的组织方式；README 篇幅上限。
+
+## 7. 数据模型：包内物理 FK / 跨包逻辑外键（#5）
+
+PostgreSQL schema 按业务域划分（`user`、`content`、`notify`、`moderation` 等）。外键策略：
+
+- **包内物理 FK**：同一 schema 内的引用必须建 `FOREIGN KEY` 约束，由数据库保证引用完整性。
+- **跨包逻辑外键**：跨 schema 的引用只建索引、不加约束，避免 schema 间循环依赖和强耦合；由业务代码与软删策略保证一致。
+
+**理由**：`users` 表软删永不硬删，跨包逻辑外键不会失联；物理 FK 限制在同 schema 内，既享受数据库约束，又保留包边界独立演化的空间。
+
+### 7.1 包内物理 FK 清单（截至 0010）
+
+| schema | 表 | 列 | 指向 |
+|---|---|---|---|
+| `user` | `follows_users` | `follower_id` | `user.users(id)` |
+| `user` | `follows_users` | `target_id` | `user.users(id)` |
+| `user` | `invitation_codes` | `created_by` | `user.users(id)` |
+| `user` | `invitation_codes` | `used_by` | `user.users(id)` |
+
+### 7.2 跨包逻辑外键清单（保持索引，不加约束）
+
+- `content`：`posts.author_id`、`comments.author_id`、`likes.user_id`、`favorites.user_id`。
+- `user`：`follows_boards.follower_id`、`follows_topics.follower_id`。
+- `notify`：`notifications.recipient_id`、`messages.from_user_id`、`messages.to_user_id`。
+- `moderation`：`reports.reporter_id`、`reports.handler_id`、`moderation_actions.moderator_id`。
+
+新增跨包引用时，遵循同一规则：建索引、写代码保证、不建 `FOREIGN KEY`。
