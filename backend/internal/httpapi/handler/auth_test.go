@@ -49,8 +49,21 @@ func newEngineWithUploads(t *testing.T, gdb *gorm.DB, uploadDir string, maxBytes
 }
 
 // seedCode 直插邀请码（auth-flow §7：管理员 DB 直管，MVP 无管理 UI）。
+// 0010 迁移后 invitation_codes.created_by 有物理 FK，需先保证 admin 用户存在，并同步序列避免 id 冲突。
 func seedCode(t *testing.T, gdb *gorm.DB, code string) {
 	t.Helper()
+	if err := gdb.Exec(`
+		INSERT INTO "user".users (id, email, username, password_hash, role)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO NOTHING
+	`, 1, "admin@example.com", "admin", "hash", "admin").Error; err != nil {
+		t.Fatalf("seed admin 用户失败: %v", err)
+	}
+	if err := gdb.Exec(`
+		SELECT setval(pg_get_serial_sequence('"user".users', 'id'), COALESCE((SELECT MAX(id) FROM "user".users), 1), true)
+	`).Error; err != nil {
+		t.Fatalf("同步 users_id_seq 失败: %v", err)
+	}
 	if err := gdb.Exec(`INSERT INTO "user".invitation_codes (code, created_by) VALUES (?, ?)`, code, 1).Error; err != nil {
 		t.Fatalf("seed 邀请码失败: %v", err)
 	}
