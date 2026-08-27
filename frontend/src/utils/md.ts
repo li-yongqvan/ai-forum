@@ -2,6 +2,8 @@
 // 安全（D4/v2）：先 HTML 转义防 XSS；链接协议白名单 http/https/mailto（伪协议被拦）；外链 rel="noopener noreferrer"
 // 实现：先抽离代码/图片/链接为占位符，最后还原，避免生成物被后续规则二次处理（防 <a href="<a href=…>）。
 
+import type { MentionUser } from '../api/types'
+
 const esc = (s: string): string =>
   String(s)
     .replace(/&/g, '&amp;')
@@ -27,12 +29,17 @@ function safeLink(url: string, text?: string): string | null {
 // → `#a#b` 只识别第一个；`"`/`;`/`:` 都是边界。
 const TAG_RE = /(^|[^\p{L}\p{N}_#])#([\p{L}\p{N}_]{1,30})/gu
 
+// #72 提及规则（与 backend/content/mentions.go 的 mentionRE 保持同步，改一侧须改另一侧——评审 F1/Q3 纪律）。
+// 字面规则：`@` + 连续中文/字母/数字/下划线 ≤30；`@` 前须为行首/空白/标点才识别。
+// 与 TAG_RE 同构，排除集多一个 `@`（防 `@@name` 误识别）。
+const MENTION_RE = /(^|[^\p{L}\p{N}_@])@([\p{L}\p{N}_]{1,30})/gu
+
 /** 标签名归一化（与后端 NormalizeTag 一致）：小写。 */
 function normalizeTag(s: string): string {
   return s.toLowerCase()
 }
 
-export function md(src: string): string {
+export function md(src: string, mentions?: MentionUser[]): string {
   let s = esc(src)
   const blocks: string[] = []
   const pushBlock = (html: string) => {
@@ -61,6 +68,16 @@ export function md(src: string): string {
   s = s.replace(TAG_RE, (_m: string, lead: string, tag: string) =>
     lead + pushBlock(`<a class="tag" href="#/tag/${encodeURIComponent(normalizeTag(tag))}">#${tag}</a>`),
   )
+  // #72 提及：仅渲染 mentions 列表内的用户名（后端已解析落库、过滤有效/自我/去重），
+  // 未命中保持纯文本（D3：不存在/封禁/自我的 @text 不转链接）
+  if (mentions && mentions.length) {
+    const byName = new Map(mentions.map((m) => [m.username, m.user_id]))
+    s = s.replace(MENTION_RE, (_m: string, lead: string, name: string) => {
+      const uid = byName.get(name)
+      if (uid == null) return lead + '@' + name
+      return lead + pushBlock(`<a class="mention" href="#/user/${uid}">@${name}</a>`)
+    })
+  }
   // 粗体
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   // 段落

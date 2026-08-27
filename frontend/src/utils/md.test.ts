@@ -124,3 +124,41 @@ describe('md 标签渲染（#54）', () => {
     expect(md('他说"#AI"')).toContain('<a class="tag" href="#/tag/ai">#AI</a>')
   })
 })
+
+describe('md 提及渲染（#72）', () => {
+  const M = [
+    { user_id: 2, username: 'bob' },
+    { user_id: 3, username: '小明' },
+  ]
+
+  it('命中的用户名渲染为可点锚点', () => {
+    expect(md('你好 @bob 欢迎', M)).toContain('<a class="mention" href="#/user/2">@bob</a>')
+  })
+  it('中文用户名命中渲染', () => {
+    expect(md('@小明 说得对', M)).toContain('<a class="mention" href="#/user/3">@小明</a>')
+  })
+  it('未命中列表的 @text 保持纯文本（D3）', () => {
+    const out = md('见 @ghost 和 @alice', M)
+    expect(out).toContain('@ghost')
+    expect(out).not.toContain('<a class="mention"')
+    expect(out).not.toContain('@alice</a>') // alice 不在列表也不渲染
+  })
+  it('不传 mentions 参数时 @text 保持纯文本', () => {
+    expect(md('@bob 你好')).not.toContain('<a class="mention"')
+  })
+  it('代码/URL 内 @ 不误识别', () => {
+    const out = md('代码 `@bob` 和 http://x.com/@bob 和 a@b.com', M)
+    expect(out).not.toContain('<a class="mention"')
+  })
+  it('@@ 前是 @ 不识别', () => {
+    expect(md('@@bob', M)).not.toContain('<a class="mention"')
+  })
+  it('紧贴中文前的 @ 不识别（与后端同边界）', () => {
+    expect(md('他@bob', M)).not.toContain('<a class="mention"')
+  })
+  it('提及与标签共存各自渲染', () => {
+    const out = md('#AI 邀请 @bob', M)
+    expect(out).toContain('<a class="tag" href="#/tag/ai">#AI</a>')
+    expect(out).toContain('<a class="mention" href="#/user/2">@bob</a>')
+  })
+})

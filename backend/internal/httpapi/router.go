@@ -39,6 +39,19 @@ func (a userProviderAdapter) FollowsUser(ctx context.Context, followerID, target
 	return a.svc.FollowsUser(ctx, followerID, targetID)
 }
 
+// GetUserByUsername 把 user.ErrNotFound 翻译为 content.ErrMentionedUserNotFound（#72：内容域据此跳过
+// 不存在/封禁/软删的提及用户名，不渲染链接、不通知）。
+func (a userProviderAdapter) GetUserByUsername(ctx context.Context, username string) (content.UserView, error) {
+	u, err := a.svc.GetUserByUsername(ctx, username)
+	if err != nil {
+		if errors.Is(err, user.ErrNotFound) {
+			return content.UserView{}, content.ErrMentionedUserNotFound
+		}
+		return content.UserView{}, err
+	}
+	return content.UserView{ID: u.ID, Username: u.Username, AvatarURL: u.AvatarURL}, nil
+}
+
 // NewUserProvider 构造 content.UserProvider（供 main 装配 content 服务）。
 func NewUserProvider(svc user.Service) content.UserProvider {
 	return userProviderAdapter{svc: svc}

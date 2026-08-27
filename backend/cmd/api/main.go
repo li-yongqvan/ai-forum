@@ -45,9 +45,14 @@ func main() {
 
 	jwtMgr := auth.NewManager(cfg.JWTSecret, 7*24*time.Hour)
 	userSvc := user.NewService(user.NewGormRepo(db), jwtMgr)
-	contentSvc := content.NewService(content.NewGormRepo(db), httpapi.NewUserProvider(userSvc))
-	uploadSvc := upload.NewService(upload.Config{Dir: cfg.UploadsDir, MaxBytes: cfg.MaxUploadBytes})
+	// #72：content 需要 Notifier 包装 notifySvc，须先于 contentSvc 装配
 	notifySvc := notify.NewService(notify.NewGormRepo(db))
+	contentSvc := content.NewService(
+		content.NewGormRepo(db),
+		httpapi.NewUserProvider(userSvc),
+		httpapi.NewContentNotifier(notifySvc),
+	)
+	uploadSvc := upload.NewService(upload.Config{Dir: cfg.UploadsDir, MaxBytes: cfg.MaxUploadBytes})
 	moderationSvc := moderation.NewService(
 		moderation.NewGormRepo(db),
 		httpapi.NewContentGateway(contentSvc),

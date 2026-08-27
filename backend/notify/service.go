@@ -15,7 +15,7 @@ import (
 // CreateNotificationCmd 构造通知。快照字段（ActorName/ActorAvatar/TargetTitle）由调用方算好传入。
 type CreateNotificationCmd struct {
 	RecipientID int64
-	Type        string // follow | like | comment | reply | report_result | report_handled
+	Type        string // follow | like | comment | reply | report_result | report_handled | mention
 	ActorID     *int64
 	ActorName   *string
 	ActorAvatar *string
@@ -25,15 +25,15 @@ type CreateNotificationCmd struct {
 }
 
 type NotificationView struct {
-	ID          int64      `json:"id"`
-	Type        string     `json:"type"`
-	ActorID     *int64     `json:"actor_id,omitempty"`
-	ActorName   *string    `json:"actor_name,omitempty"`
-	TargetType  *string    `json:"target_type,omitempty"`
-	TargetID    *int64     `json:"target_id,omitempty"`
-	TargetTitle *string    `json:"target_title,omitempty"`
-	IsRead      bool       `json:"is_read"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          int64     `json:"id"`
+	Type        string    `json:"type"`
+	ActorID     *int64    `json:"actor_id,omitempty"`
+	ActorName   *string   `json:"actor_name,omitempty"`
+	TargetType  *string   `json:"target_type,omitempty"`
+	TargetID    *int64    `json:"target_id,omitempty"`
+	TargetTitle *string   `json:"target_title,omitempty"`
+	IsRead      bool      `json:"is_read"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type MessageView struct {
@@ -115,9 +115,9 @@ const (
 // sendInterval 可被测试覆写。
 var sendInterval = defaultSendInterval
 
-// validTypes 通知类型白名单（与 schema CHECK 一致：#53 加 report_handled，被举报人视角的举报处理通知）。
+// validTypes 通知类型白名单（与 schema CHECK 一致：#53 加 report_handled，#72 加 mention）。
 var validTypes = map[string]bool{
-	"follow": true, "like": true, "comment": true, "reply": true, "report_result": true, "report_handled": true,
+	"follow": true, "like": true, "comment": true, "reply": true, "report_result": true, "report_handled": true, "mention": true,
 }
 
 type service struct {

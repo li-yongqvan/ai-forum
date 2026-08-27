@@ -75,4 +75,9 @@ type Repo interface {
 	// tags（#54）
 	ReplacePostTags(ctx context.Context, postID int64, tagNames []string) error
 	ListTagsByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]string, error)
+
+	// mentions（#72）
+	CreateMentions(ctx context.Context, mentions []*Mention) error
+	ListMentionsByTargets(ctx context.Context, targetType string, targetIDs []int64) (map[int64][]*Mention, error)
+	DeleteMentionsByTarget(ctx context.Context, targetType string, targetID int64) error
 }

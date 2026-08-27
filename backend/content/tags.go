@@ -31,14 +31,21 @@ var (
 	urlRE    = regexp.MustCompile(`(?i)https?:\/\/[^\s<")]+`)
 )
 
-// ParseTags 从帖子正文提取标签：先剥离 markdown 构造（代码块/链接/URL 内的 `#` 不识别），
-// 再在剩余文本上做非重叠匹配，归一化小写、去重、保首次出现序。
-func ParseTags(content string) []string {
-	s := fencedRE.ReplaceAllString(content, " ")
+// stripMarkdownForMatching 剥离 markdown 构造（围栏代码/行内码/图/链接/裸 URL），
+// 每处替换为单个空格。标签与提及解析共用（#72）：在剥离后文本上做非重叠匹配。
+func stripMarkdownForMatching(s string) string {
+	s = fencedRE.ReplaceAllString(s, " ")
 	s = codeRE.ReplaceAllString(s, " ")
 	s = imgRE.ReplaceAllString(s, " ")
 	s = linkRE.ReplaceAllString(s, " ")
 	s = urlRE.ReplaceAllString(s, " ")
+	return s
+}
+
+// ParseTags 从帖子正文提取标签：先剥离 markdown 构造（代码块/链接/URL 内的 `#` 不识别），
+// 再在剩余文本上做非重叠匹配，归一化小写、去重、保首次出现序。
+func ParseTags(content string) []string {
+	s := stripMarkdownForMatching(content)
 
 	seen := make(map[string]bool)
 	tags := make([]string, 0, 4)

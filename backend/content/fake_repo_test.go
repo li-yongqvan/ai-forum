@@ -26,6 +26,10 @@ type fakeRepo struct {
 	tagPosts       map[int64][]string
 	errReplaceTags error
 
+	// #72 提及：key "type:id:userid"；errCreateMentions 供「落库失败不阻断创建」用例
+	mentions          map[string]*Mention
+	errCreateMentions error
+
 	// 单调递增关系时钟：关注/收藏时间严格递增，排序断言确定性成立（评审 §七.3）。
 	followClock time.Time
 
@@ -34,6 +38,7 @@ type fakeRepo struct {
 	nextLikeID    int64
 	nextFavID     int64
 	nextTagID     int64
+	nextMentionID int64
 }
 
 func newFakeRepo() *fakeRepo {
@@ -48,8 +53,9 @@ func newFakeRepo() *fakeRepo {
 		followsT:    map[[2]int64]time.Time{},
 		tags:        map[string]int64{},
 		tagPosts:    map[int64][]string{},
+		mentions:    map[string]*Mention{},
 		followClock: time.Now(),
-		nextPostID:  1, nextCommentID: 1, nextLikeID: 1, nextFavID: 1, nextTagID: 1,
+		nextPostID:  1, nextCommentID: 1, nextLikeID: 1, nextFavID: 1, nextTagID: 1, nextMentionID: 1,
 	}
 }
 
@@ -232,7 +238,8 @@ func (f *fakeRepo) DeletePost(ctx context.Context, id int64) error {
 		return errNotFound
 	}
 	p.DeletedAt = gorm.DeletedAt{Valid: true, Time: time.Now()}
-	delete(f.tagPosts, id) // #54 卫生：删帖清关联
+	delete(f.tagPosts, id)                                     // #54 卫生：删帖清关联
+	f.DeleteMentionsByTarget(context.Background(), "post", id) // #72 卫生：删帖清提及
 	return nil
 }
 
@@ -318,6 +325,7 @@ func (f *fakeRepo) DeleteComment(ctx context.Context, id int64) error {
 		return errNotFound
 	}
 	c.DeletedAt = gorm.DeletedAt{Valid: true, Time: time.Now()}
+	f.DeleteMentionsByTarget(context.Background(), "comment", id) // #72 卫生：删评论清提及
 	return nil
 }
 
@@ -616,6 +624,53 @@ func (f *fakeRepo) ensureTagIDs(names []string) {
 	}
 }
 
+// ---- 提及（#72，fake 实现） ----
+
+// CreateMentions 批量插入提及关联（已存在 key → 跳过，模拟 ON CONFLICT DO NOTHING 幂等）。
+func (f *fakeRepo) CreateMentions(ctx context.Context, mentions []*Mention) error {
+	if f.errCreateMentions != nil {
+		return f.errCreateMentions
+	}
+	for _, m := range mentions {
+		key := mentionKey(m.TargetType, m.TargetID, m.MentionedUserID)
+		if _, ok := f.mentions[key]; ok {
+			continue
+		}
+		m.ID = f.nextMentionID
+		f.nextMentionID++
+		f.mentions[key] = m
+	}
+	return nil
+}
+
+func (f *fakeRepo) ListMentionsByTargets(ctx context.Context, targetType string, targetIDs []int64) (map[int64][]*Mention, error) {
+	want := make(map[int64]bool, len(targetIDs))
+	for _, id := range targetIDs {
+		want[id] = true
+	}
+	out := make(map[int64][]*Mention)
+	for _, m := range f.mentions {
+		if m.TargetType != targetType || !want[m.TargetID] {
+			continue
+		}
+		out[m.TargetID] = append(out[m.TargetID], m)
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) DeleteMentionsByTarget(ctx context.Context, targetType string, targetID int64) error {
+	for key, m := range f.mentions {
+		if m.TargetType == targetType && m.TargetID == targetID {
+			delete(f.mentions, key)
+		}
+	}
+	return nil
+}
+
+func mentionKey(targetType string, targetID, userID int64) string {
+	return targetType + ":" + strconv.FormatInt(targetID, 10) + ":" + strconv.FormatInt(userID, 10)
+}
+
 // slicePage 应用 offset/limit 分页（与 fake ListPosts 的内联分页语义一致）。
 func slicePage[T any](items []T, offset, limit int) []T {
 	start := offset
@@ -655,6 +710,8 @@ func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 type fakeUsers struct {
 	followed []int64
 	names    map[int64]string
+	byName   map[string]int64  // username → id（#72 提及解析；缺省时从 names 反查填充）
+	banned   map[int64]bool    // #72 active 过滤：被封禁用户按不存在处理
 	follows  map[[2]int64]bool // followerID→targetID 是否关注（默认 false）
 }
 
@@ -669,13 +726,50 @@ func (u fakeUsers) GetUserView(ctx context.Context, id int64) (UserView, error) 
 	return UserView{}, errors.New("fake: 用户不存在")
 }
 
+func (u fakeUsers) GetUserByUsername(ctx context.Context, username string) (UserView, error) {
+	id, ok := u.byName[username]
+	if !ok {
+		return UserView{}, ErrMentionedUserNotFound
+	}
+	if u.banned[id] {
+		return UserView{}, ErrMentionedUserNotFound
+	}
+	return UserView{ID: id, Username: username}, nil
+}
+
 func (u fakeUsers) FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error) {
 	return u.follows[[2]int64{followerID, targetID}], nil
 }
 
+// fakeNotifier 记录提及通知命令，供断言通知次数与内容；err 非 nil 时模拟通知失败（best-effort 路径）。
+type fakeNotifier struct {
+	calls []MentionNotificationCmd
+	err   error
+}
+
+func (f *fakeNotifier) NotifyMention(_ context.Context, in MentionNotificationCmd) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, in)
+	return nil
+}
+
 func newServiceWith(f *fakeRepo, u fakeUsers) Service {
+	return newServiceWithN(f, u, &fakeNotifier{})
+}
+
+// newServiceWithN 允许注入自定义 Notifier（#72 通知断言用）。
+func newServiceWithN(f *fakeRepo, u fakeUsers, n Notifier) Service {
 	if u.names == nil {
 		u.names = map[int64]string{}
 	}
-	return NewService(f, u)
+	if u.byName == nil {
+		// 未显式指定 byName 时从 names 反查填充（默认全部存在且 active）
+		u.byName = map[string]int64{}
+		for id, name := range u.names {
+			u.byName[name] = id
+		}
+	}
+	return NewService(f, u, n)
 }
