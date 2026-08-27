@@ -21,25 +21,26 @@ type CreatePostCmd struct {
 
 // PostView 帖子读模型（含计数与展示名；viewer 字段提供赞/藏/关注初始态，v2 评审定稿形态）。
 type PostView struct {
-	ID            int64     `json:"id"`
-	BoardID       int64     `json:"board_id"`
-	BoardName     string    `json:"board_name"`
-	TopicID       *int64    `json:"topic_id"`
-	TopicName     *string   `json:"topic_name"`
-	Tags          []string  `json:"tags,omitempty"` // #54 正文标签（归一化小写；无则省略）
-	AuthorID      int64     `json:"author_id"`
-	AuthorName    string    `json:"author_name"`
-	AuthorAvatar  *string   `json:"author_avatar"`
-	Title         string    `json:"title"`
-	Content       string    `json:"content"`
-	IsPinned      bool      `json:"is_pinned"`
-	IsFeatured    bool      `json:"is_featured"`
-	ViewCount     int       `json:"view_count"`
-	LikeCount     int       `json:"like_count"`
-	CommentCount  int       `json:"comment_count"`
-	FavoriteCount int       `json:"favorite_count"`
-	Viewer        *PostViewer `json:"viewer,omitempty"` // 仅登录态附（含 liked/favorited/following_author）
-	CreatedAt     time.Time `json:"created_at"`
+	ID            int64         `json:"id"`
+	BoardID       int64         `json:"board_id"`
+	BoardName     string        `json:"board_name"`
+	TopicID       *int64        `json:"topic_id"`
+	TopicName     *string       `json:"topic_name"`
+	Tags          []string      `json:"tags,omitempty"`     // #54 正文标签（归一化小写；无则省略）
+	Mentions      []MentionView `json:"mentions,omitempty"` // #72 提及（正文里有效 @username 列表，前端据此渲染链接）
+	AuthorID      int64         `json:"author_id"`
+	AuthorName    string        `json:"author_name"`
+	AuthorAvatar  *string       `json:"author_avatar"`
+	Title         string        `json:"title"`
+	Content       string        `json:"content"`
+	IsPinned      bool          `json:"is_pinned"`
+	IsFeatured    bool          `json:"is_featured"`
+	ViewCount     int           `json:"view_count"`
+	LikeCount     int           `json:"like_count"`
+	CommentCount  int           `json:"comment_count"`
+	FavoriteCount int           `json:"favorite_count"`
+	Viewer        *PostViewer   `json:"viewer,omitempty"` // 仅登录态附（含 liked/favorited/following_author）
+	CreatedAt     time.Time     `json:"created_at"`
 }
 
 // PostViewer 登录态查看者对帖子的操作状态（前端渲染按钮初始态，避免逐项补请求）。
@@ -62,15 +63,22 @@ type CreateCommentCmd struct {
 }
 
 type CommentView struct {
-	ID         int64     `json:"id"`
-	PostID     int64     `json:"post_id"`
-	AuthorID   int64     `json:"author_id"`
-	AuthorName string    `json:"author_name"`
-	ParentID   *int64    `json:"parent_id"`
-	Floor      *int      `json:"floor"`
-	Content    string    `json:"content"`
-	Deleted    bool      `json:"deleted"` // 软删占位（回复链保留）
-	CreatedAt  time.Time `json:"created_at"`
+	ID         int64         `json:"id"`
+	PostID     int64         `json:"post_id"`
+	AuthorID   int64         `json:"author_id"`
+	AuthorName string        `json:"author_name"`
+	ParentID   *int64        `json:"parent_id"`
+	Floor      *int          `json:"floor"`
+	Content    string        `json:"content"`
+	Deleted    bool          `json:"deleted"`            // 软删占位（回复链保留）
+	Mentions   []MentionView `json:"mentions,omitempty"` // #72 提及（有效 @username 列表）
+	CreatedAt  time.Time     `json:"created_at"`
+}
+
+// MentionView 提及读模型（#72）：user_id 供跳转（/user/:id），username 供渲染文本。
+type MentionView struct {
+	UserID   int64  `json:"user_id"`
+	Username string `json:"username"`
 }
 
 // PostMetaView 帖子最小元数据（治理域 enrich/处理用，#33 S4：复用 repo.GetPostByID，
@@ -183,20 +191,21 @@ type CommentNode struct {
 // ---- 错误 ----
 
 var (
-	ErrBoardNotFound     = errors.New("content: 板块不存在")
-	ErrTopicNotFound     = errors.New("content: 话题不存在")
-	ErrTopicNotInBoard   = errors.New("content: 话题不属于该板块")
-	ErrPostNotFound      = errors.New("content: 帖子不存在或已删除")
-	ErrCommentNotFound   = errors.New("content: 评论不存在或已删除")
-	ErrParentNotInPost   = errors.New("content: 父评论不属于该帖子")
-	ErrAlreadyLiked      = errors.New("content: 已点赞")
-	ErrAlreadyFavorited  = errors.New("content: 已收藏")
-	ErrAlreadyFollowed   = errors.New("content: 已关注该板块/话题")
-	ErrForbidden         = errors.New("content: 无权限执行该操作")
-	ErrAuthRequired      = errors.New("content: 需要登录")
-	ErrInvalidTargetType = errors.New("content: 目标类型非法")
-	ErrInvalidFeedTab    = errors.New("content: 信息流 tab 非法")
-	ErrContentEmpty      = errors.New("content: 内容不能为空")
+	ErrBoardNotFound         = errors.New("content: 板块不存在")
+	ErrTopicNotFound         = errors.New("content: 话题不存在")
+	ErrTopicNotInBoard       = errors.New("content: 话题不属于该板块")
+	ErrPostNotFound          = errors.New("content: 帖子不存在或已删除")
+	ErrCommentNotFound       = errors.New("content: 评论不存在或已删除")
+	ErrParentNotInPost       = errors.New("content: 父评论不属于该帖子")
+	ErrAlreadyLiked          = errors.New("content: 已点赞")
+	ErrAlreadyFavorited      = errors.New("content: 已收藏")
+	ErrAlreadyFollowed       = errors.New("content: 已关注该板块/话题")
+	ErrForbidden             = errors.New("content: 无权限执行该操作")
+	ErrAuthRequired          = errors.New("content: 需要登录")
+	ErrInvalidTargetType     = errors.New("content: 目标类型非法")
+	ErrInvalidFeedTab        = errors.New("content: 信息流 tab 非法")
+	ErrContentEmpty          = errors.New("content: 内容不能为空")
+	ErrMentionedUserNotFound = errors.New("content: 被提及用户不存在或不可用")
 )
 
 // ---- Service 接口（粗粒度命令 + 读模型查询，#4/#7） ----
@@ -213,6 +222,24 @@ type UserProvider interface {
 	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
 	GetUserView(ctx context.Context, id int64) (UserView, error)
 	FollowsUser(ctx context.Context, followerID, targetID int64) (bool, error)
+	// GetUserByUsername 按用户名查「存在且 active」的用户（#72）。不存在/封禁/软删 → ErrMentionedUserNotFound。
+	GetUserByUsername(ctx context.Context, username string) (UserView, error)
+}
+
+// MentionNotificationCmd 提及通知命令（快照字段由调用方算好，#4 D4；经 Notifier seam 到 notify 域）。
+type MentionNotificationCmd struct {
+	RecipientID int64
+	ActorID     int64
+	ActorName   string
+	ActorAvatar *string
+	TargetType  string // 恒 "post"（§6.5：评论提及也统一跳帖子详情）
+	TargetID    int64  // 恒为 post_id（前端 /post/:id）
+	TargetTitle string
+}
+
+// Notifier 供内容域发提及通知（S1：content 不 import notify；由 httpapi 装配层 adapter 实现）。
+type Notifier interface {
+	NotifyMention(ctx context.Context, in MentionNotificationCmd) error
 }
 
 // Service 是内容域的对外接口。权限校验在命令内（#9 §5.0：接口独立鉴权，前端可见性只是体验层）。
@@ -254,13 +281,14 @@ type Service interface {
 // ---- 实现 ----
 
 type service struct {
-	repo  Repo
-	users UserProvider
+	repo   Repo
+	users  UserProvider
+	notify Notifier
 }
 
-// NewService 构造内容域服务。
-func NewService(repo Repo, users UserProvider) Service {
-	return &service{repo: repo, users: users}
+// NewService 构造内容域服务（#72：注入 Notifier 供提及通知；content 经 seam 不 import notify）。
+func NewService(repo Repo, users UserProvider, notifier Notifier) Service {
+	return &service{repo: repo, users: users, notify: notifier}
 }
 
 var _ Service = (*service)(nil)
@@ -301,6 +329,8 @@ func (s *service) CreatePost(ctx context.Context, in CreatePostCmd) (PostView, e
 			slog.Warn("content: 帖子标签写入失败", "post_id", p.ID, "err", err)
 		}
 	}
+	// #72 提及：解析落库 + 通知（best-effort，不阻断发帖）
+	s.processMentions(ctx, p.AuthorID, p.Content, "post", p.ID, p.ID, p.Title)
 	return s.postView(ctx, p, in.AuthorID)
 }
 
@@ -308,7 +338,9 @@ func (s *service) CreateComment(ctx context.Context, in CreateCommentCmd) (Comme
 	if strings.TrimSpace(in.Content) == "" {
 		return CommentView{}, ErrContentEmpty
 	}
-	if _, err := s.repo.GetPostByID(ctx, in.PostID); err != nil {
+	// #72 评论提及需要父帖标题：保留 post（原实现丢弃）
+	post, err := s.repo.GetPostByID(ctx, in.PostID)
+	if err != nil {
 		return CommentView{}, ErrPostNotFound
 	}
 	var (
@@ -337,7 +369,9 @@ func (s *service) CreateComment(ctx context.Context, in CreateCommentCmd) (Comme
 	if err := s.repo.CreateComment(ctx, c); err != nil {
 		return CommentView{}, err
 	}
-	return s.commentView(ctx, c, nil), nil
+	// #72 评论提及：mentions 表 target_id = 评论 id；通知统一跳父帖详情（§6.5）
+	s.processMentions(ctx, c.AuthorID, c.Content, "comment", c.ID, post.ID, post.Title)
+	return s.commentView(ctx, c, nil, nil), nil
 }
 
 func (s *service) Like(ctx context.Context, in LikeCmd) error {
@@ -408,6 +442,81 @@ func (s *service) DeleteComment(ctx context.Context, in DeleteCommentCmd) error 
 		return ErrForbidden
 	}
 	return s.repo.DeleteComment(ctx, in.CommentID)
+}
+
+// processMentions 解析提及并落库 + 发通知（#72）。best-effort：任何失败仅日志，不阻断主命令。
+// 落库失败则跳过通知（无关联可发）；通知失败仅 Warn（照 likes 通知先例留痕）。
+func (s *service) processMentions(ctx context.Context, authorID int64, content string, targetType string, targetID int64, notifyTargetID int64, targetTitle string) {
+	names := ParseMentions(content)
+	if len(names) == 0 {
+		return
+	}
+	// actor 快照（评审 F1）：一次 GetUserView 取 author 的 Username/AvatarURL 填全部通知
+	actor, err := s.users.GetUserView(ctx, authorID)
+	if err != nil {
+		slog.Warn("content: 提及通知 actor 读取失败", "author_id", authorID, "err", err)
+		return
+	}
+	rows := make([]*Mention, 0, len(names))
+	seen := make(map[int64]bool, len(names))
+	for _, username := range names {
+		u, err := s.users.GetUserByUsername(ctx, username)
+		if err != nil {
+			if errors.Is(err, ErrMentionedUserNotFound) {
+				continue // 不存在/非 active → 跳过（D2/D3）
+			}
+			// 非 not-found DB 错误 → Warn + 跳过该 username（best-effort）
+			slog.Warn("content: 提及用户解析失败", "username", username, "err", err)
+			continue
+		}
+		if u.ID == authorID { // 自己 @ 自己不通知（D4）
+			continue
+		}
+		if seen[u.ID] { // 同内容多次 @ 同一人只发一条（D4）
+			continue
+		}
+		seen[u.ID] = true
+		rows = append(rows, &Mention{
+			TargetType:        targetType,
+			TargetID:          targetID,
+			MentionedUserID:   u.ID,
+			MentionedUsername: username,
+		})
+	}
+	if len(rows) == 0 {
+		return
+	}
+	if err := s.repo.CreateMentions(ctx, rows); err != nil {
+		slog.Warn("content: 提及关联写入失败", "target_type", targetType, "target_id", targetID, "err", err)
+		return
+	}
+	for _, m := range rows {
+		// 通知统一跳帖子详情（§6.5）：TargetType 恒 "post"，TargetID = notifyTargetID（post_id）
+		if err := s.notify.NotifyMention(ctx, MentionNotificationCmd{
+			RecipientID: m.MentionedUserID,
+			ActorID:     authorID,
+			ActorName:   actor.Username,
+			ActorAvatar: actor.AvatarURL,
+			TargetType:  "post",
+			TargetID:    notifyTargetID,
+			TargetTitle: targetTitle,
+		}); err != nil {
+			slog.Warn("content: 提及通知发送失败", "recipient", m.MentionedUserID, "err", err)
+		}
+	}
+}
+
+// toMentionViewsByTarget 把 repo 层 mentions 批量结果转成读模型（#72）。
+func toMentionViewsByTarget(m map[int64][]*Mention) map[int64][]MentionView {
+	out := make(map[int64][]MentionView, len(m))
+	for targetID, rows := range m {
+		views := make([]MentionView, 0, len(rows))
+		for _, r := range rows {
+			views = append(views, MentionView{UserID: r.MentionedUserID, Username: r.MentionedUsername})
+		}
+		out[targetID] = views
+	}
+	return out
 }
 
 func (s *service) PinPost(ctx context.Context, in ToggleCmd) error {
@@ -498,7 +607,7 @@ func (s *service) GetComment(ctx context.Context, id int64) (CommentView, error)
 	if err != nil {
 		return CommentView{}, ErrCommentNotFound
 	}
-	return s.commentView(ctx, c, nil), nil
+	return s.commentView(ctx, c, nil, nil), nil
 }
 
 func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error) {
@@ -579,6 +688,15 @@ func (s *service) buildTree(ctx context.Context, postID int64, comments []*Comme
 			names[c.AuthorID] = u.Username
 		}
 	}
+	// #72 评论提及批量 enrich（一次查询，不 N+1）
+	commentIDs := make([]int64, 0, len(comments))
+	for _, c := range comments {
+		commentIDs = append(commentIDs, c.ID)
+	}
+	mentionsByComment := map[int64][]MentionView{}
+	if mm, err := s.repo.ListMentionsByTargets(ctx, "comment", commentIDs); err == nil {
+		mentionsByComment = toMentionViewsByTarget(mm)
+	}
 	byID := map[int64]*Comment{}
 	for _, c := range comments {
 		byID[c.ID] = c
@@ -596,7 +714,7 @@ func (s *service) buildTree(ctx context.Context, postID int64, comments []*Comme
 	sort.Slice(roots, func(i, j int) bool { return floorLess(roots[i], roots[j]) })
 	var build func(c *Comment) CommentNode
 	build = func(c *Comment) CommentNode {
-		node := CommentNode{CommentView: s.commentView(ctx, c, names)}
+		node := CommentNode{CommentView: s.commentView(ctx, c, names, mentionsByComment)}
 		replies := children[c.ID]
 		// 回复按创建时间升序；同刻以 ID 决胜，保证确定性（#5 D3 邻接表无强序）
 		sort.Slice(replies, func(i, j int) bool {
@@ -824,6 +942,11 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 	if tm, err := s.repo.ListTagsByPostIDs(ctx, postIDs); err == nil {
 		tagsByPost = tm
 	}
+	// #72 提及富化（best-effort：查询失败仅缺省，前端按 mentions 列表 gate 渲染链接）
+	mentionsByPost := map[int64][]MentionView{}
+	if mm, err := s.repo.ListMentionsByTargets(ctx, "post", postIDs); err == nil {
+		mentionsByPost = toMentionViewsByTarget(mm)
+	}
 
 	views := make([]PostView, 0, len(posts))
 	for _, p := range posts {
@@ -845,6 +968,7 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 			CreatedAt:     p.CreatedAt,
 		}
 		view.Tags = tagsByPost[p.ID]
+		view.Mentions = mentionsByPost[p.ID]
 		if p.TopicID != nil {
 			if n, ok := topicNames[*p.TopicID]; ok {
 				view.TopicName = &n
@@ -867,7 +991,7 @@ func (s *service) postViews(ctx context.Context, posts []*Post, viewerID int64) 
 }
 
 // commentView 组装评论读模型；names 为批量预取（nil 则逐条查）。
-func (s *service) commentView(ctx context.Context, c *Comment, names map[int64]string) CommentView {
+func (s *service) commentView(ctx context.Context, c *Comment, names map[int64]string, mentions map[int64][]MentionView) CommentView {
 	v := CommentView{
 		ID:        c.ID,
 		PostID:    c.PostID,
@@ -876,6 +1000,14 @@ func (s *service) commentView(ctx context.Context, c *Comment, names map[int64]s
 		Floor:     c.Floor,
 		Content:   c.Content,
 		CreatedAt: c.CreatedAt,
+	}
+	if mentions == nil {
+		// 单条读取（CreateComment/GetComment）：单独查提及（#72；buildTree 走批量富化传非 nil map）
+		if mm, err := s.repo.ListMentionsByTargets(ctx, "comment", []int64{c.ID}); err == nil {
+			v.Mentions = toMentionViewsByTarget(mm)[c.ID]
+		}
+	} else {
+		v.Mentions = mentions[c.ID] // 无该评论 → nil slice → omitempty 省略
 	}
 	name := names[c.AuthorID]
 	if name == "" {

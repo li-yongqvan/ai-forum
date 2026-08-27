@@ -78,7 +78,7 @@ watch(
               </div>
               <!-- 评论内容走 md 渲染（#12：与正文一致，图片 URL 可渲染；md 已先转义防 XSS） -->
               <!-- eslint-disable-next-line vue/no-v-html -->
-              <div class="cbody" v-html="md(c.content)" @click="handleContentImageClick"></div>
+              <div class="cbody" v-html="md(c.content, c.mentions)" @click="handleContentImageClick"></div>
               <div class="cactions">
                 <button v-if="depth < 3" @click="emit('reply', c.id, c.author_name)">回复</button>
                 <button @click="emit('report', c.id)">举报</button>

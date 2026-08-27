@@ -56,6 +56,7 @@ export interface Post {
   comment_count: number
   favorite_count: number
   tags?: string[] // #54 正文标签（归一化小写；无则省略）
+  mentions?: MentionUser[] // #72 提及（有效 @username 列表；无则省略）
   viewer?: PostViewer
   created_at: string
 }
@@ -69,6 +70,7 @@ export interface CommentNode {
   floor: number | null
   content: string
   deleted: boolean
+  mentions?: MentionUser[] // #72 提及（有效 @username 列表；无则省略）
   created_at: string
   replies?: CommentNode[]
 }
@@ -121,8 +123,14 @@ export interface FollowTarget {
   target_id: number
 }
 
-// 通知中心（#32/#53）：6 类；report_result 举报人视角、report_handled 被举报人视角
-export type NotificationType = 'follow' | 'like' | 'comment' | 'reply' | 'report_result' | 'report_handled'
+// 通知中心（#32/#53/#72）：7 类；report_result 举报人视角、report_handled 被举报人视角、mention 提及
+export type NotificationType = 'follow' | 'like' | 'comment' | 'reply' | 'report_result' | 'report_handled' | 'mention'
+
+// #72 提及：后端已解析落库的有效用户提及（正文渲染链接用；未命中的 @text 保持纯文本）
+export interface MentionUser {
+  user_id: number
+  username: string
+}
 
 export interface AppNotification {
   id: number

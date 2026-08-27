@@ -104,6 +104,20 @@ type PostTag struct {
 
 func (PostTag) TableName() string { return "content.post_tags" }
 
+// Mention 提及（#72）：创建时落库（target_type: post|comment 多态，照 likes 先例）。
+// mentioned_user_id 为跨包逻辑FK（只建索引不建约束）；mentioned_username 为创建时快照
+// （对齐 users.username VARCHAR(64)），读侧零 join。
+type Mention struct {
+	ID                int64 `gorm:"primaryKey"`
+	TargetType        string
+	TargetID          int64
+	MentionedUserID   int64  // 逻辑FK → user.users(id)
+	MentionedUsername string // 创建时快照
+	CreatedAt         time.Time
+}
+
+func (Mention) TableName() string { return "content.mentions" }
+
 type FollowBoard struct {
 	ID         int64 `gorm:"primaryKey"`
 	FollowerID int64 // 逻辑FK → user.users

@@ -352,7 +352,7 @@ function onImage(url: string) {
 
     <h1 class="dtitle">{{ post.title }}</h1>
     <!-- eslint-disable-next-line vue/no-v-html -->
-    <div v-html="md(post.content)" @click="handleContentImageClick"></div>
+    <div v-html="md(post.content, post.mentions)" @click="handleContentImageClick"></div>
 
     <div class="dacts">
       <button class="dact" :class="{ on: post.viewer?.liked }" @click="toggleLike">

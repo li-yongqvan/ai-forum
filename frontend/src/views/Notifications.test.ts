@@ -105,6 +105,23 @@ describe('Notifications 通知中心', () => {
     expect(wrapper.text()).toContain('你的内容因「垃圾广告」被举报，已删除')
   })
 
+  it('渲染 mention：文案含标题 + 点击跳帖子详情（#72）', async () => {
+    const wrapper = await mountWith([
+      followNotif({
+        id: 10,
+        type: 'mention',
+        actor_name: 'alice',
+        target_type: 'post',
+        target_id: 9,
+        target_title: '父帖标题',
+      }),
+    ])
+    expect(wrapper.text()).toContain('alice 在《父帖标题》中提到了你')
+    await wrapper.find('.item').trigger('click')
+    await flushPromises()
+    expect(push).toHaveBeenCalledWith('/post/9')
+  })
+
   it('点击单条：跳转用户主页 + 标记已读 + 红点消失', async () => {
     const wrapper = await mountWith([followNotif()])
     await wrapper.find('.item').trigger('click')

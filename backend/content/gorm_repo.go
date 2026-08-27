@@ -137,8 +137,11 @@ func (r *gormRepo) DeletePost(ctx context.Context, id int64) error {
 		if err := tx.Delete(&Post{}, id).Error; err != nil { // 软删
 			return err
 		}
-		// 顺带硬删该帖 post_tags（软删不触发 FK CASCADE，#54 卫生）
-		return tx.Where("post_id = ?", id).Delete(&PostTag{}).Error
+		// 顺带硬删该帖 post_tags + mentions（软删不触发 FK CASCADE，#54/#72 卫生）
+		if err := tx.Where("post_id = ?", id).Delete(&PostTag{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("target_type = ? AND target_id = ?", "post", id).Delete(&Mention{}).Error
 	})
 }
 
@@ -200,8 +203,14 @@ func (r *gormRepo) ListCommentsByPost(ctx context.Context, postID int64) ([]*Com
 	return comments, nil
 }
 
+// DeleteComment 软删留占位 + 顺带硬删该评论 mentions（#72 卫生，照 DeletePost 事务形态）。
 func (r *gormRepo) DeleteComment(ctx context.Context, id int64) error {
-	return r.db.WithContext(ctx).Delete(&Comment{}, id).Error // 软删留占位
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&Comment{}, id).Error; err != nil { // 软删留占位
+			return err
+		}
+		return tx.Where("target_type = ? AND target_id = ?", "comment", id).Delete(&Mention{}).Error
+	})
 }
 
 func (r *gormRepo) CountCommentsByPost(ctx context.Context, postIDs []int64) (map[int64]int, error) {
@@ -488,6 +497,43 @@ func (r *gormRepo) ListTagsByPostIDs(ctx context.Context, postIDs []int64) (map[
 		out[row.PostID] = append(out[row.PostID], row.Name)
 	}
 	return out, nil
+}
+
+// ---- 提及（#72） ----
+
+// CreateMentions 批量插入提及关联（ON CONFLICT DO NOTHING 幂等：#72 去重兜底，UNIQUE 冲突静默跳过）。
+func (r *gormRepo) CreateMentions(ctx context.Context, mentions []*Mention) error {
+	if len(mentions) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&mentions).Error
+}
+
+// ListMentionsByTargets 批量取目标（post 或 comment）的提及（读模型富化，#72）。
+// 顺序 = id 升序（正文首次出现序，照 ListTagsByPostIDs）。
+func (r *gormRepo) ListMentionsByTargets(ctx context.Context, targetType string, targetIDs []int64) (map[int64][]*Mention, error) {
+	if len(targetIDs) == 0 {
+		return map[int64][]*Mention{}, nil
+	}
+	var rows []*Mention
+	if err := r.db.WithContext(ctx).
+		Where("target_type = ? AND target_id IN ?", targetType, targetIDs).
+		Order("id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int64][]*Mention, len(rows))
+	for _, m := range rows {
+		out[m.TargetID] = append(out[m.TargetID], m)
+	}
+	return out, nil
+}
+
+// DeleteMentionsByTarget 删除某目标（post/comment）的全部提及关联（软删清理，#72 D6）。
+func (r *gormRepo) DeleteMentionsByTarget(ctx context.Context, targetType string, targetID int64) error {
+	return r.db.WithContext(ctx).
+		Where("target_type = ? AND target_id = ?", targetType, targetID).
+		Delete(&Mention{}).Error
 }
 
 // ---- 辅助 ----

@@ -33,9 +33,10 @@ func newEngineWithUploads(t *testing.T, gdb *gorm.DB, uploadDir string, maxBytes
 	t.Helper()
 	jwtMgr := auth.NewManager("test-secret", 7*24*time.Hour)
 	userSvc := user.NewService(user.NewGormRepo(gdb), jwtMgr)
-	contentSvc := content.NewService(content.NewGormRepo(gdb), httpapi.NewUserProvider(userSvc))
-	uploadSvc := upload.NewService(upload.Config{Dir: uploadDir, MaxBytes: maxBytes})
+	// #72：content 需要 Notifier 包装 notifySvc，须先装配 notifySvc
 	notifySvc := notify.NewService(notify.NewGormRepo(gdb))
+	contentSvc := content.NewService(content.NewGormRepo(gdb), httpapi.NewUserProvider(userSvc), httpapi.NewContentNotifier(notifySvc))
+	uploadSvc := upload.NewService(upload.Config{Dir: uploadDir, MaxBytes: maxBytes})
 	moderationSvc := moderation.NewService(
 		moderation.NewGormRepo(gdb),
 		httpapi.NewContentGateway(contentSvc),

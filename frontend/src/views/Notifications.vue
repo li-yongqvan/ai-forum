@@ -107,6 +107,9 @@ function textFor(n: AppNotification): string {
     case 'report_handled':
       // 被举报人视角（#53）：整句文案由后端算好存进 target_title，前端原文渲染
       return n.target_title || '你的内容已被处理'
+    case 'mention':
+      // 提及（#72）：快照标题由后端存进 target_title，点击跳帖子详情
+      return `${who}在《${n.target_title || '帖子'}》中提到了你`
     default:
       return '新通知'
   }
@@ -129,6 +132,7 @@ function linkTo(n: AppNotification): string | null {
     case 'like':
     case 'comment':
     case 'reply':
+    case 'mention': // #72 提及 → 帖子详情（快照 TargetID 恒为 post_id）
       return n.target_id != null ? `/post/${n.target_id}` : null
     case 'report_result':
     case 'report_handled':

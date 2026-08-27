@@ -340,10 +340,10 @@ func TestListFeed_Follow(t *testing.T) {
 	base := time.Now().Add(-48 * time.Hour)
 	f, _ := newContentService()
 	// 关注来源：用户1（alice）、板块2、话题1(RAG)
-	f.seedPost(1, 1, 1, withCreatedAt(base.Add(1*time.Hour)))          // alice 的帖（关注用户命中）
-	f.seedPost(2, 2, 2, withTopic(2), withCreatedAt(base.Add(2*time.Hour)))  // bob 项目实战（关注板块命中）
-	f.seedPost(3, 3, 1, withTopic(1), withCreatedAt(base.Add(3*time.Hour)))  // mod 学习讨论 RAG（关注话题命中）
-	f.seedPost(4, 3, 1, withCreatedAt(base))                            // 无关帖（作者/板块/话题均未关注）
+	f.seedPost(1, 1, 1, withCreatedAt(base.Add(1*time.Hour)))               // alice 的帖（关注用户命中）
+	f.seedPost(2, 2, 2, withTopic(2), withCreatedAt(base.Add(2*time.Hour))) // bob 项目实战（关注板块命中）
+	f.seedPost(3, 3, 1, withTopic(1), withCreatedAt(base.Add(3*time.Hour))) // mod 学习讨论 RAG（关注话题命中）
+	f.seedPost(4, 3, 1, withCreatedAt(base))                                // 无关帖（作者/板块/话题均未关注）
 
 	fu := fakeUsers{
 		followed: []int64{1}, // 关注用户 alice
@@ -932,6 +932,194 @@ func TestListFeed_Hot(t *testing.T) {
 		}
 		if len(views) != 1 || views[0].ID != 8 {
 			t.Errorf("hot+ai = %+v, want [8]", views)
+		}
+	})
+}
+
+// ---- #72 提及：落库 + 通知 + 读模型富化 ----
+
+func mentionFixture() (*fakeRepo, fakeUsers) {
+	f := newFakeRepo()
+	f.seedBoard(1, "学习讨论")
+	u := fakeUsers{names: map[int64]string{1: "alice", 2: "bob", 3: "carol"}}
+	return f, u
+}
+
+// mentionIDs 提取 MentionView 的 user_id 集合（fake 读模型顺序不定，按集合断言）。
+func mentionIDs(ms []MentionView) map[int64]bool {
+	out := map[int64]bool{}
+	for _, m := range ms {
+		out[m.UserID] = true
+	}
+	return out
+}
+
+func TestCreatePostMentions(t *testing.T) {
+	t.Run("有效提及落库+通知+富化", func(t *testing.T) {
+		f, u := mentionFixture()
+		n := &fakeNotifier{}
+		svc := newServiceWithN(f, u, n)
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "你好 @bob 和 @carol"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		ids := mentionIDs(view.Mentions)
+		if len(view.Mentions) != 2 || !ids[2] || !ids[3] {
+			t.Errorf("Mentions = %+v, want 含 bob(2)/carol(3)", view.Mentions)
+		}
+		if len(n.calls) != 2 {
+			t.Fatalf("notify calls = %d, want 2", len(n.calls))
+		}
+		c0 := n.calls[0]
+		if c0.RecipientID != 2 || c0.ActorName != "alice" || c0.TargetID != view.ID || c0.TargetTitle != "标题" {
+			t.Errorf("cmd[0] = %+v, want recipient=bob(2) actor=alice target=%d title=标题", c0, view.ID)
+		}
+	})
+
+	t.Run("自我 @ 不落库不通知", func(t *testing.T) {
+		f, u := mentionFixture()
+		n := &fakeNotifier{}
+		svc := newServiceWithN(f, u, n)
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "@alice 我来了"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if len(view.Mentions) != 0 {
+			t.Errorf("Mentions = %+v, want 空（自我过滤）", view.Mentions)
+		}
+		if len(n.calls) != 0 {
+			t.Errorf("notify calls = %d, want 0", len(n.calls))
+		}
+	})
+
+	t.Run("重复 @ 同一人只发一条", func(t *testing.T) {
+		f, u := mentionFixture()
+		n := &fakeNotifier{}
+		svc := newServiceWithN(f, u, n)
+		_, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "@bob 见 @bob 再看 @bob"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if len(n.calls) != 1 {
+			t.Errorf("notify calls = %d, want 1（去重）", len(n.calls))
+		}
+		if got := len(f.mentions); got != 1 {
+			t.Errorf("mentions rows = %d, want 1", got)
+		}
+	})
+
+	t.Run("不存在/封禁用户跳过", func(t *testing.T) {
+		f, u := mentionFixture()
+		u.banned = map[int64]bool{2: true} // bob 被封禁
+		n := &fakeNotifier{}
+		svc := newServiceWithN(f, u, n)
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "见 @bob（封禁）@ghost（不存在）@carol"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		ids := mentionIDs(view.Mentions)
+		if len(view.Mentions) != 1 || !ids[3] {
+			t.Errorf("Mentions = %+v, want [carol(3)]", view.Mentions)
+		}
+		if len(n.calls) != 1 || n.calls[0].RecipientID != 3 {
+			t.Errorf("notify calls = %+v, want 仅 carol", n.calls)
+		}
+	})
+
+	t.Run("提及落库失败不阻断发帖", func(t *testing.T) {
+		f, u := mentionFixture()
+		f.errCreateMentions = errors.New("fake: mentions db down")
+		svc := newServiceWithN(f, u, &fakeNotifier{})
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "@bob 你好"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v, want 发帖不阻断", err)
+		}
+		if view.ID == 0 {
+			t.Error("帖子未创建")
+		}
+	})
+
+	t.Run("通知失败不阻断发帖且提及仍落库", func(t *testing.T) {
+		f, u := mentionFixture()
+		n := &fakeNotifier{err: errors.New("fake: notify down")}
+		svc := newServiceWithN(f, u, n)
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "@bob 你好"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v, want 发帖不阻断", err)
+		}
+		if view.ID == 0 {
+			t.Error("帖子未创建")
+		}
+		if len(f.mentions) != 1 {
+			t.Errorf("mentions rows = %d, want 1（通知失败不阻断落库）", len(f.mentions))
+		}
+	})
+
+	t.Run("删除帖子清理提及", func(t *testing.T) {
+		f, u := mentionFixture()
+		svc := newServiceWithN(f, u, &fakeNotifier{})
+		view, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "标题", Content: "@bob 你好"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		if err := svc.DeletePost(ctx(), DeletePostCmd{OperatorID: 1, OperatorRole: "member", PostID: view.ID}); err != nil {
+			t.Fatalf("DeletePost() error = %v", err)
+		}
+		if len(f.mentions) != 0 {
+			t.Errorf("mentions rows = %d, want 0（删帖清理）", len(f.mentions))
+		}
+	})
+}
+
+func TestCreateCommentMentions(t *testing.T) {
+	t.Run("评论提及：mentions 挂评论、通知跳父帖", func(t *testing.T) {
+		f, u := mentionFixture()
+		n := &fakeNotifier{}
+		svc := newServiceWithN(f, u, n)
+		post, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "父帖", Content: "正文"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		cm, err := svc.CreateComment(ctx(), CreateCommentCmd{PostID: post.ID, AuthorID: 1, Content: "回复 @bob"})
+		if err != nil {
+			t.Fatalf("CreateComment() error = %v", err)
+		}
+		if len(cm.Mentions) != 1 || cm.Mentions[0].UserID != 2 {
+			t.Errorf("comment Mentions = %+v, want [bob(2)]", cm.Mentions)
+		}
+		if len(n.calls) != 1 {
+			t.Fatalf("notify calls = %d, want 1", len(n.calls))
+		}
+		c := n.calls[0]
+		if c.TargetType != "post" || c.TargetID != post.ID || c.TargetTitle != "父帖" {
+			t.Errorf("cmd = %+v, want TargetType=post target=%d title=父帖", c, post.ID)
+		}
+		// 评论树读模型富化
+		tree, err := svc.GetCommentTree(ctx(), post.ID)
+		if err != nil {
+			t.Fatalf("GetCommentTree() error = %v", err)
+		}
+		if len(tree.Comments) != 1 || len(tree.Comments[0].Mentions) != 1 {
+			t.Errorf("tree = %+v, want 1 条评论含 mentions", tree)
+		}
+	})
+
+	t.Run("删除评论清理提及", func(t *testing.T) {
+		f, u := mentionFixture()
+		svc := newServiceWithN(f, u, &fakeNotifier{})
+		post, err := svc.CreatePost(ctx(), CreatePostCmd{AuthorID: 1, BoardID: 1, Title: "父帖", Content: "正文"})
+		if err != nil {
+			t.Fatalf("CreatePost() error = %v", err)
+		}
+		cm, err := svc.CreateComment(ctx(), CreateCommentCmd{PostID: post.ID, AuthorID: 1, Content: "回复 @bob"})
+		if err != nil {
+			t.Fatalf("CreateComment() error = %v", err)
+		}
+		if err := svc.DeleteComment(ctx(), DeleteCommentCmd{OperatorID: 1, OperatorRole: "member", CommentID: cm.ID}); err != nil {
+			t.Fatalf("DeleteComment() error = %v", err)
+		}
+		if len(f.mentions) != 0 {
+			t.Errorf("mentions rows = %d, want 0（删评论清理）", len(f.mentions))
 		}
 	})
 }

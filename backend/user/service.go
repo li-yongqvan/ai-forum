@@ -96,6 +96,8 @@ type Service interface {
 	// IsActive 返回用户是否可执行写操作（存在且未被封禁；软删/不存在视为不活跃，供写拦截中间件）。
 	IsActive(ctx context.Context, userID int64) (bool, error)
 	GetUser(ctx context.Context, id int64) (UserView, error)
+	// GetUserByUsername 按用户名查「存在且 active」的用户（#72 提及解析）。不存在/封禁/软删 → ErrNotFound。
+	GetUserByUsername(ctx context.Context, username string) (UserView, error)
 	// FollowedUserIDs 返回某用户关注的用户 id 列表（供 content 构造关注流，#4 进程内调用）。
 	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
 	// FollowsUser 判断 followerID 是否已关注 targetID（供 content 构造 viewer.following_author）。
@@ -384,6 +386,19 @@ func (s *service) GetUser(ctx context.Context, id int64) (UserView, error) {
 	u, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return UserView{}, err
+	}
+	return toView(u), nil
+}
+
+// GetUserByUsername 按用户名查「存在且 active」的用户（#72 提及解析）。不存在/封禁/软删 → ErrNotFound，
+// 与 IsActive 同 fail-closed 语义：content 据此决定 @username 是否渲染为链接。
+func (s *service) GetUserByUsername(ctx context.Context, username string) (UserView, error) {
+	u, err := s.repo.GetUserByUsername(ctx, username)
+	if err != nil {
+		return UserView{}, err
+	}
+	if u.Status != "active" {
+		return UserView{}, ErrNotFound
 	}
 	return toView(u), nil
 }
