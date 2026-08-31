@@ -29,6 +29,7 @@ fi
 docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api
 
 # 3. 捕获期望镜像（#74：build 成功后、up 前；回退分支会 retag :latest，up 后捕获即失真）
+#    镜像 ID 来源与 deploy.yml scp 模式（docker image inspect --format '{{.Id}}'）同源，格式均 sha256: 前缀——改动需两侧同步
 EXPECTED_IMAGE="$(docker images --no-trunc -q "$IMG:latest")"
 [ -n "$EXPECTED_IMAGE" ] || { echo "FATAL: 无法捕获 $IMG:latest 镜像 ID（构建产物缺失）" >&2; exit 1; }
 

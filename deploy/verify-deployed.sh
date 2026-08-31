@@ -10,7 +10,9 @@
 set -euo pipefail
 APP_DIR="$HOME/ai-forum"
 
-norm() { echo "${1#sha256:}"; }
+# 统一镜像 ID 格式：docker inspect -f '{{.Image}}' 与 docker images --no-trunc -q 均带 sha256: 前缀（2026-08-31 实查逐字相等），
+# 去前缀后精确比对——即使某侧格式变化（如短 ID/无前缀）也不误判
+strip_sha256_prefix() { echo "${1#sha256:}"; }
 
 # 核对①：运行容器镜像 == 期望镜像（期望为空跳过）。$3 为测试注入的运行镜像（空=实查 docker inspect）
 verify_image() { # $1=期望镜像ID $2=容器名 $3=运行镜像（测试注入）
@@ -19,7 +21,7 @@ verify_image() { # $1=期望镜像ID $2=容器名 $3=运行镜像（测试注入
   if [ -z "$running" ]; then
     running="$(docker inspect -f '{{.Image}}' "$ct" 2>/dev/null || echo '')"
   fi
-  if [ "$(norm "$running")" != "$(norm "$expected")" ]; then
+  if [ "$(strip_sha256_prefix "$running")" != "$(strip_sha256_prefix "$expected")" ]; then
     echo "VERIFY-FAIL: api 运行镜像 != 本次构建镜像（检测到回退）" >&2
     echo "  running   = ${running:-<无法读取>}" >&2
     echo "  expected  = $expected" >&2

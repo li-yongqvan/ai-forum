@@ -121,7 +121,8 @@ jobs:
         if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
         id: api-image
         run: |
-          # #74：捕获 CI 构建镜像 ID（scp 核对期望），经 step output 传 ssh 脚本——防 load 到旧镜像/重跑旧 workflow 漏检
+          # #74：捕获 CI 构建镜像 ID（scp 核对期望），经 step output 传 ssh 脚本——拦「tar 标签不匹配/部分 load」类异常
+          # 镜像 ID 来源与 deploy-server.sh（docker images --no-trunc -q）同源，格式均 sha256: 前缀——改动需两侧同步
           IMG_ID="$(docker image inspect ghcr.io/li-yongqvan/ai-forum-api:latest --format '{{.Id}}')"
           echo "image_id=${IMG_ID}" >> "$GITHUB_OUTPUT"
           echo "image_id=${IMG_ID}"

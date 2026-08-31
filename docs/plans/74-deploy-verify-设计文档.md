@@ -187,7 +187,7 @@
 bash deploy/wait-healthy.sh ai-forum-api 60 || exit 1
 bash deploy/verify-deployed.sh "${{ steps.api-image.outputs.image_id }}" || exit 1
 ```
-- 依据：期望镜像 ID 由 **CI 构建侧捕获**（而非服务器 load 后读 `:latest`）——彻底堵死「load 到旧镜像 / 重跑旧 workflow」时镜像核对形式性通过的漏检（F1，用户确认 2026-08-31 补强）；`|| exit 1` 与既有 `wait-healthy` 行同风格（`deploy.yml:154`）。
+- 依据：期望镜像 ID 由 **CI 构建侧捕获**（而非服务器 load 后读 `:latest`）——拦「tar 标签不匹配/部分 load」类异常（F1，用户确认 2026-08-31 补强）；`|| exit 1` 与既有 `wait-healthy` 行同风格（`deploy.yml:154`）。**局限如实声明**：因内容寻址自洽，scp 镜像核对为形式性，「重跑旧 workflow 且迁移集未变 → 绿但旧码」残余场景不拦（Spec 评审发现，用户确认接受，§7 #8 / §9 Q3）。
 - 改动后跑 `bash scripts/check-workflows.sh` 校验 workflow（SOP §0；本地 Docker daemon 未启动时依赖 CI `workflow-lint` 兜底，见 §8.4）。
 
 ## §6 关键设计裁决（【决策】，含理由与备选）
@@ -243,7 +243,7 @@ bash deploy/verify-deployed.sh "${{ steps.api-image.outputs.image_id }}" || exit
 | 5 | 期望迁移集 = 仓库文件集（部署时已 pull 到新 HEAD） | `deploy.yml:148` `git pull --ff-only` 先行；`set -euo pipefail` 下 pull 失败即止 | §6.4 |
 | 6 | 迁移比对按文件名（`0007×2` 两条），DB 多出记录不判失败 | `grep -qxF "$b"`（完整文件名精确行匹配）；只查缺失方向 | §2.2 / §2.3 |
 | 7 | psql 查询失败 fail-closed | 命令替换失败 + `set -euo pipefail` 自然中止 | §6.6 |
-| 8 | scp 模式镜像核对不退化：期望镜像 ID 由 CI 构建步捕获传入（非 load 后读 `:latest`），旧 workflow/旧 tar 重跑必被镜像或迁移核对拦下 | `steps.api-image.outputs.image_id` 传入 verify（F1 补强，用户确认 2026-08-31） | §5.3 / F1 |
+| 8 | scp 模式镜像核对为**形式性自洽**（已知局限，用户确认接受）：期望 ID 与 load 后运行镜像同源于本次 run 同一镜像（内容寻址），成功路径恒等；「重跑旧 workflow 且迁移集未变 → 绿但旧码」残余场景**不拦**（紧急路径 + 操作者主动选择，可接受）。F1 补强实际价值 = 拦「tar 标签不匹配/部分 load」类异常 | `steps.api-image.outputs.image_id` 传入 verify（F1 补强，用户确认 2026-08-31）+ 局限如实记录 | §5.3 / F1 / Spec 评审 |
 | 9 | （已知缺口）功能冒烟仍靠人工 | 明确不做自动化（D6）；本票只保证「代码/DB 落地」，不保证「功能正确」 | D6 |
 | 10 | 服务器 `~/ai-forum` 文件只经 git 改动 | 新脚本随 PR 合并进仓库，不 scp 写入；`.gitattributes` 强制 LF | §2.3 / SOP §11 |
 
@@ -262,6 +262,15 @@ bash deploy/verify-deployed.sh "${{ steps.api-image.outputs.image_id }}" || exit
 3. **不误报**：以当前真实期望（运行镜像 `sha256:c4bd...` + 仓库 13 个迁移文件）跑 → 应 `exit 0`（`VERIFY-OK`）。→ 证明：正常发版不误报。
 4. **psql fail-closed**：故意用错 DB 名（`-d wrongdb`，临时参数注入）→ 应非零退出。→ 证明：DB 查询失败按失败处理。
 
+**执行记录（2026-08-31 实现后实跑，真实脚本经 ssh stdin 管道至服务器运行——不写入服务器 repo，不违反「只准 git 改动」红线）**：
+
+| 场景 | 输入 | 实测输出（关键行） | 结果 |
+|---|---|---|---|
+| 1 镜像抓回退 | 期望=`rollback` 全量 `sha256:08dd...c21` | `VERIFY-FAIL: api 运行镜像 != 本次构建镜像（检测到回退）`；`running = sha256:c4bd...` / `expected = sha256:08dd...` | ✅ `exit 1` |
+| 2 迁移抓缺失 | 本地 source 单测注入缺 0010 的已应用集 | `VERIFY-FAIL: DB 缺迁移（新代码未真正落地）：0010_fix_user_intra_package_fks.sql` | ✅ `exit 1`（§8.1 断言 7/7 全过） |
+| 3 不误报 | 期望=`sha256:c4bd...`（当前真实） | `VERIFY-OK: 新代码在跑（镜像一致，迁移齐全）` | ✅ `exit 0` |
+| 4 psql fail-closed | `-d wrongdb` | psql `exit 2`：`FATAL: database "wrongdb" does not exist` → 命令替换失败 + `set -e` 中止 | ✅ 非零退出 |
+
 ### 8.3 真实发版回归（合并后，CI 触发）
 - 正常发版：deploy job 应绿，日志含 `VERIFY-OK: 新代码在跑`（**核对确实跑了**，不是「核对没跑但绿」）；服务器 HEAD/镜像/迁移三对齐（SOP §9.4）。
 - 若未来某次真发生回退：核对应使 deploy job 红（本次不人为制造）。
@@ -278,7 +287,7 @@ bash deploy/verify-deployed.sh "${{ steps.api-image.outputs.image_id }}" || exit
 
 - **Q1（镜像核对误报风险）**：`docker compose build` 成功后 `docker images --no-trunc -q "$IMG:latest"` 是否**恒等于** `up --force-recreate` 创建容器的 `{{.Image}}`？有无 BuildKit 多阶段/标签别名场景会使两者不一致 → 健康新代码被误判失败？作者认为无（build 即 retag `:latest`，up 即从 `:latest` 创建），但这是**最不该误报**的点，请独立核验。
 - **Q2（新镜像 dangling 卫生）**：核对失败 exit 1 时，`docker image prune -f`（原 L61）不会执行 → 新构建镜像留作 dangling，直到下次成功部署的 prune 清理。是否接受？（作者：接受，失败态留下镜像反而便于事后比对，且不碰运行栈。）
-- **Q3（scp 模式漏检边界）**：~~§7 #8 已知缺口~~ **已裁决：补强**（用户确认 2026-08-31）——CI 构建步捕获镜像 ID 传入 verify（§5.3/F1），漏检关闭。留档备查。
+- **Q3（scp 模式漏检边界）**：**已裁决：补强 + 如实记录残余局限**（用户确认 2026-08-31）——CI 构建步捕获镜像 ID 传入 verify（§5.3/F1），拦「tar 标签不匹配/部分 load」；「重跑旧 workflow 且迁移集未变 → 绿但旧码」残余场景**不拦**（Spec 评审发现，用户确认接受，§7 #8）。留档备查。
 - **Q4（失败语义可读性）**：`DEPLOY-FAIL`/`VERIFY-FAIL` 两级前缀能否让运维在 CI 日志一眼区分「deploy 失败但站点健康停旧码」vs「站点也挂了」（后者是 L46 的 `FATAL: api not healthy after rollback`）？文案是否需再收敛措辞？
 - **Q5（仓库文件集作为期望的时效边界）**：期望迁移集依赖「部署时服务器 git pull 已到新 HEAD」（`deploy.yml:148`）。若该 pull 被 `set -e` 之外的方式半成功（如 `--ff-only` 在非干净工作区失败但被忽略）→ 期望集少算 → 迁移核对失真。`--ff-only` + `set -euo pipefail` 是否已足够护栏？作者认为够（pull 失败即中止整个 ssh 脚本），请评审确认无旁路。
 
@@ -291,7 +300,7 @@ bash deploy/verify-deployed.sh "${{ steps.api-image.outputs.image_id }}" || exit
 | Q3 scp 漏检边界 | 裁决：补强（用户确认） | CI 构建步捕获镜像 ID 传入 verify（§5.3）；§7 #8 已更新 |
 | Q4 失败语义可读性 | 认可 + 建议 | `VERIFY-FAIL`/`DEPLOY-FAIL` 文案含运维指导句（§6.7/§5.2） |
 | Q5 git pull 护栏 | 认可（无旁路） | 维持 `--ff-only` + `set -euo pipefail` |
-| F1 scp 镜像核对形式性 | 重要 → 补强 | 见 Q3；用户确认 2026-08-31 |
+| F1 scp 镜像核对形式性 | 重要 → 补强 + 局限如实记录 | 补强拦「tar 标签不匹配」；「旧 commit 且迁移集未变」残余局限接受（Spec 评审 + 用户确认 2026-08-31，§7 #8） |
 | F2 决策落档 | 重要 | 新建 `docs/handoffs/grilling-decisions/issue-74-deploy-verify-decisions.md`（D1-D6，随 PR） |
 | F3 check-workflows 需 Docker | 重要 | §8.4 改写：daemon 未起时走 CI `workflow-lint`/轻量解析兜底 |
 | F4 空期望静默跳过 | 建议 | verify-deployed.sh 空期望跳过 + 调用方守卫已注释明示 |
