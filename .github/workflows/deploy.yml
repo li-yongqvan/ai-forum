@@ -4,8 +4,8 @@
 # - frontend-test：vitest 单测，阻塞门（#44 转正）
 # - deploy（#43 v3.2 双模式，DEPLOY_MODE 仓库 variable 切换）：
 #     server（默认）：前端 npm ci + build（构建验证）→ tar.gz → scp → ssh 跑 deploy/deploy-server.sh
-#                     服务器 git pull + docker compose build（goproxy.cn）+ up + 健康轮询/回退 + 前端换装 + reload
-#     scp（应急回退）：追加 CI 构建镜像（docker build load）→ save|gzip → scp → 服务器 load + up + 健康等待（A' 老路）
+#                     服务器 git pull + docker compose build（goproxy.cn）+ up + 健康轮询/回退 + 「新代码在跑」核对（#74）+ 前端换装 + reload
+#     scp（应急回退）：追加 CI 构建镜像（docker build load，捕获镜像 ID 作核对期望）→ save|gzip → scp → 服务器 load + up + 健康等待 + 「新代码在跑」核对（#74，A' 老路）
 #   未配置 SSH secrets 或 DEPLOY_ENABLED!=true 时跳过上传/部署步，run 不红
 
 name: Build and Deploy
@@ -119,7 +119,12 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Save and compress API image (scp fallback mode)
         if: env.SSH_HOST != '' && vars.DEPLOY_ENABLED == 'true' && vars.DEPLOY_MODE == 'scp'
+        id: api-image
         run: |
+          # #74：捕获 CI 构建镜像 ID（scp 核对期望），经 step output 传 ssh 脚本——防 load 到旧镜像/重跑旧 workflow 漏检
+          IMG_ID="$(docker image inspect ghcr.io/li-yongqvan/ai-forum-api:latest --format '{{.Id}}')"
+          echo "image_id=${IMG_ID}" >> "$GITHUB_OUTPUT"
+          echo "image_id=${IMG_ID}"
           docker save ghcr.io/li-yongqvan/ai-forum-api:latest | gzip -1 > api-image.tar.gz
           ls -lh api-image.tar.gz
       - name: Upload API image to server (scp fallback mode)
@@ -152,10 +157,12 @@ jobs:
               docker compose up -d --force-recreate api
               # F3：应急路径也等健康（≤60s），不出「deploy 绿站点红」；健康通过后才换装前端（防「新前端+坏 api」）
               bash deploy/wait-healthy.sh ai-forum-api 60 || exit 1
+              # #74：核对「新代码在跑」（期望镜像 ID 由 CI 构建步 steps.api-image.outputs.image_id 传入；失败 → exit 1，deploy job 红）
+              bash deploy/verify-deployed.sh "${{ steps.api-image.outputs.image_id }}" || exit 1
               tar -xzf /tmp/ai-forum-frontend.tar.gz -C frontend/dist/
               docker compose exec -T web nginx -t && docker compose exec -T web nginx -s reload
               docker image prune -f
               docker compose ps
             else
-              bash deploy/deploy-server.sh /tmp/ai-forum-frontend.tar.gz   # 内含 wait-healthy + prune + ps
+              bash deploy/deploy-server.sh /tmp/ai-forum-frontend.tar.gz   # 内含 wait-healthy + 新代码核对（#74）+ prune + ps
             fi

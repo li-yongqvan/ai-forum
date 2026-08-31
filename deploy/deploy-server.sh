@@ -7,6 +7,7 @@
 #   - 前端换装保 inode：find -delete 清内容 + cp -a 原地铺新（web 容器 bind mount frontend/dist）
 #     ⚠️ 严禁 rm -rf frontend/dist && mv——bind mount 绑 inode，换目录后容器仍挂旧目录，新文件永不生效
 #   - 换装必须 api healthy 之后：防「新前端 + 坏 api」版本错配
+#   - 「新代码在跑」核对（#74）：捕获期望镜像（build 后 up 前）+ 换装前核对（镜像一致 + 迁移齐全）；失败=已回退/迁移缺失 → 跳过换装 + exit 1（CI 红，不再静默绿）
 set -euo pipefail
 
 APP_DIR="$HOME/ai-forum"
@@ -27,7 +28,11 @@ fi
 # 2. 服务器本地构建（goproxy.cn；失败 set -e 中止，旧容器照跑）
 docker compose build --build-arg GOPROXY=https://goproxy.cn,direct --build-arg GOSUMDB=sum.golang.google.cn api
 
-# 3. 拉起 + 健康轮询（复用 deploy/wait-healthy.sh；unhealthy/超时 → 回退旧镜像）
+# 3. 捕获期望镜像（#74：build 成功后、up 前；回退分支会 retag :latest，up 后捕获即失真）
+EXPECTED_IMAGE="$(docker images --no-trunc -q "$IMG:latest")"
+[ -n "$EXPECTED_IMAGE" ] || { echo "FATAL: 无法捕获 $IMG:latest 镜像 ID（构建产物缺失）" >&2; exit 1; }
+
+# 4. 拉起 + 健康轮询（复用 deploy/wait-healthy.sh；unhealthy/超时 → 回退旧镜像）
 docker compose up -d --force-recreate api
 ok=0
 if bash deploy/wait-healthy.sh ai-forum-api 60; then ok=1; fi
@@ -45,7 +50,13 @@ if [ "$ok" -ne 1 ]; then
 fi
 [ "$ok" -eq 1 ] || { echo "FATAL: api not healthy after rollback" >&2; exit 1; }
 
-# 4. 前端换装（api healthy 之后；staging → 清旧内容 → 保 dist inode 原地铺新）
+# 5. 核对「新代码在跑」（#74：健康≠新代码，上面可能已回退；失败=已回退/迁移缺失 → 跳过换装 + exit 1，CI 红）
+if ! bash deploy/verify-deployed.sh "$EXPECTED_IMAGE"; then
+  echo "DEPLOY-FAIL: 新代码未真正上线。站点健康停在旧码；本次 deploy 标记 FAIL（CI 红）。" >&2
+  exit 1
+fi
+
+# 6. 前端换装（api healthy + 核对通过之后；staging → 清旧内容 → 保 dist inode 原地铺新）
 rm -rf /tmp/ai-forum-frontend.new && mkdir -p /tmp/ai-forum-frontend.new
 tar -xzf "$FRONTEND_TAR" -C /tmp/ai-forum-frontend.new
 chmod -R a+rX /tmp/ai-forum-frontend.new   # nginx worker uid 101（other）可读
@@ -53,11 +64,11 @@ find frontend/dist -mindepth 1 -delete     # 清旧内容（防哈希文件累�
 cp -a /tmp/ai-forum-frontend.new/. frontend/dist/
 rm -rf /tmp/ai-forum-frontend.new
 
-# 5. nginx 配置热载（web.conf 是 bind mount，只改文件不重建容器）
+# 7. nginx 配置热载（web.conf 是 bind mount，只改文件不重建容器）
 docker compose exec -T web nginx -t
 docker compose exec -T web nginx -s reload
 
-# 6. 卫生 + 收尾
+# 8. 卫生 + 收尾
 docker image prune -f
 rm -f "$FRONTEND_TAR"
 docker compose ps
