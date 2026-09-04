@@ -2,7 +2,6 @@ package user
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"time"
 )
@@ -59,9 +58,13 @@ func (f *fakeRepo) seedCode(code string, createdBy int64) *InvitationCode {
 	return ic
 }
 
+// CreateUser 对齐 gorm 适配层语义（#76 D8）：唯一冲突按约束翻译为哨兵（fake 内存版等价实现）。
 func (f *fakeRepo) CreateUser(ctx context.Context, u *User) error {
 	if _, ok := f.byUsername[u.Username]; ok {
-		return errors.New("duplicate username")
+		return ErrUsernameTaken
+	}
+	if _, ok := f.byEmail[u.Email]; ok {
+		return ErrEmailTaken
 	}
 	u.ID = f.nextID
 	f.nextID++
@@ -72,21 +75,21 @@ func (f *fakeRepo) CreateUser(ctx context.Context, u *User) error {
 }
 
 func (f *fakeRepo) GetUserByUsername(ctx context.Context, username string) (*User, error) {
-	if u, ok := f.byUsername[username]; ok {
+	if u, ok := f.byUsername[username]; ok && !u.DeletedAt.Valid { // 软删过滤对齐 gorm 自动作用域
 		return u, nil
 	}
 	return nil, ErrNotFound
 }
 
 func (f *fakeRepo) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	if u, ok := f.byEmail[email]; ok {
+	if u, ok := f.byEmail[email]; ok && !u.DeletedAt.Valid { // 软删过滤对齐 gorm 自动作用域
 		return u, nil
 	}
 	return nil, ErrNotFound
 }
 
 func (f *fakeRepo) GetUserByID(ctx context.Context, id int64) (*User, error) {
-	if u, ok := f.byID[id]; ok {
+	if u, ok := f.byID[id]; ok && !u.DeletedAt.Valid { // 软删过滤对齐 gorm 自动作用域
 		return u, nil
 	}
 	return nil, ErrNotFound

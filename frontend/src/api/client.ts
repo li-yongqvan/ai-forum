@@ -11,9 +11,15 @@ export function setToken(token: string | null): void {
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** 机器可读错误标记（#76：409 code=username_taken 供前端撞名分支；同 #34 account_banned 先例） */
+  code?: string
+  /** 服务端建议名（仅撞名 409 携带；每次以响应最新值为准重渲染，Q4 铁律） */
+  suggestion?: string
+  constructor(status: number, message: string, code?: string, suggestion?: string) {
     super(message)
     this.status = status
+    this.code = code
+    this.suggestion = suggestion
   }
 }
 
@@ -44,13 +50,16 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   })
   if (res.status === 204) return undefined as T
 
-  let data: { error?: unknown; code?: unknown } | null = null
+  let data: { error?: unknown; code?: unknown; suggestion?: unknown } | null = null
   try {
     data = await res.json()
   } catch {
     /* 非 JSON 错误体 */
   }
   const msg = data && typeof data.error === 'string' ? data.error : '请求失败'
+  // #76：code/suggestion 随错误体透传（409 撞名一键采用契约）
+  const code = typeof data?.code === 'string' ? data.code : undefined
+  const suggestion = typeof data?.suggestion === 'string' ? data.suggestion : undefined
 
   // 会话重置：401（需登录接口）或 403 code=account_banned（被封，F5 机器可读信号）。
   // 普通 403「权限不足」不清 token（防止 mod 误调 admin 接口被登出）。
@@ -62,7 +71,7 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, msg)
+    throw new ApiError(res.status, msg, code, suggestion)
   }
   return data as T
 }

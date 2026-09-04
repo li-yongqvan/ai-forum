@@ -5,12 +5,29 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
 // gormRepo 是 Repo 的 GORM 实现（实现细节，深模块内隐藏）。
 type gormRepo struct {
 	db *gorm.DB
+}
+
+// users 表唯一约束名（migrations/0001_user_schema.sql:7-8 内联 UNIQUE 的自动命名，评审 Q2）。
+const (
+	constraintUsernameKey = "users_username_key"
+	constraintEmailKey    = "users_email_key"
+)
+
+// pgUniqueViolation 返回 23505 唯一冲突的约束名；非唯一冲突、无法解出 PgError 或约束名为空均返回 ""。
+// 空串走调用方 default 分支原样上抛——宁 500 不误吞为 409（#76 Q2 裁决）。
+func pgUniqueViolation(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName
+	}
+	return ""
 }
 
 // NewGormRepo 以真实连接构造 Repo。
@@ -20,8 +37,20 @@ func NewGormRepo(db *gorm.DB) Repo {
 
 var _ Repo = (*gormRepo)(nil)
 
+// CreateUser 建用户。users 唯一约束 23505 按约束名翻译为哨兵（#76 D8：并发抢名输家拿 409 而非 500）。
+// 翻译下沉在本适配层：service 与测试不沾 pgx 驱动类型（评审 Q2）；其它/未知 23505 原样上抛。
 func (r *gormRepo) CreateUser(ctx context.Context, u *User) error {
-	return r.db.WithContext(ctx).Create(u).Error
+	if err := r.db.WithContext(ctx).Create(u).Error; err != nil {
+		switch pgUniqueViolation(err) {
+		case constraintUsernameKey:
+			return ErrUsernameTaken
+		case constraintEmailKey:
+			return ErrEmailTaken
+		default:
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *gormRepo) GetUserByUsername(ctx context.Context, username string) (*User, error) {

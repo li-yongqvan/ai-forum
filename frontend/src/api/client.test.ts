@@ -1,7 +1,7 @@
 // api/client 会话重置单测（#34 评审 F1/F5/F8）：401 与 403(code=account_banned) 统一触发会话重置钩子，
 // 普通 403「权限不足」不清 token（防 mod 误调 admin 接口被登出）。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getToken, request, setAuthFailureHandler, setToken } from './client'
+import { ApiError, getToken, request, setAuthFailureHandler, setToken } from './client'
 
 function mockFetchOnce(status: number, body: unknown) {
   vi.stubGlobal(
@@ -57,5 +57,25 @@ describe('api/client 会话重置（#34）', () => {
     mockFetchOnce(401, { error: '未登录' })
     await expect(request('GET', '/posts', undefined, {})).rejects.toThrow('未登录')
     expect(getToken()).toBe('tk-1')
+  })
+
+  // #76 §8：409 撞名契约——code/suggestion 透传到 ApiError，前端据此走一键采用分支
+  it('409 code/suggestion 透传到 ApiError（撞名契约）', async () => {
+    mockFetchOnce(409, { error: '用户名已被占用', code: 'username_taken', suggestion: 'alice_2' })
+    const err = await request('POST', '/auth/register', { username: 'alice', password: 'x' }).catch(
+      (e) => e,
+    )
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(409)
+    expect((err as ApiError).code).toBe('username_taken')
+    expect((err as ApiError).suggestion).toBe('alice_2')
+  })
+
+  it('错误体无 code/suggestion → ApiError 两字段为 undefined', async () => {
+    mockFetchOnce(500, { error: '服务器内部错误' })
+    const err = await request('GET', '/x').catch((e) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).code).toBeUndefined()
+    expect((err as ApiError).suggestion).toBeUndefined()
   })
 })

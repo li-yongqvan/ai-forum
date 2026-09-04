@@ -14,6 +14,12 @@ export interface AuthResult {
   user: AuthUser
 }
 
+// #76 open 版：免码注册载荷只含用户名+密码（email 由后端生成占位、邀请码停用；随 open commit 回退还原）
+export interface RegisterPayload {
+  username: string
+  password: string
+}
+
 export interface FollowViewer {
   following: boolean
 }

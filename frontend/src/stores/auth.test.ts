@@ -30,6 +30,17 @@ describe('auth store', () => {
     expect(localStorage.getItem('af_token')).toBe('tk-1')
   })
 
+  it('注册：两字段载荷透传 + 会话持久化（#76 open 版）', async () => {
+    const store = useAuthStore()
+    vi.mocked(authApi.register).mockResolvedValue({ token: 'tk-2', user: USER })
+    await store.register({ username: 'alice', password: 'secret123' })
+    expect(authApi.register).toHaveBeenCalledWith({ username: 'alice', password: 'secret123' })
+    expect(store.token).toBe('tk-2')
+    expect(store.isLoggedIn).toBe(true)
+    expect(store.user?.username).toBe('alice')
+    expect(localStorage.getItem('af_token')).toBe('tk-2')
+  })
+
   it('fetchMe：token 有效则载入用户', async () => {
     localStorage.setItem('af_token', 'tk-1')
     const store = useAuthStore()

@@ -24,14 +24,17 @@ func Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// registerReq：#76 open 版一次性改动（随 revert 还原）——email/invite_code 的 binding 标签整条去掉
+// （仅去 required 会留空串仍触发 email 校验→400，评审 F5⑤）；入参被 service 忽略（占位邮箱生成、免码）。
+// username/password 保留 required；trim 后空 username 由 service 守卫（ErrEmptyUsername→400）。
 type registerReq struct {
 	Username   string `json:"username" binding:"required"`
-	Email      string `json:"email" binding:"required,email"`
 	Password   string `json:"password" binding:"required"`
-	InviteCode string `json:"invite_code" binding:"required"`
+	Email      string `json:"email"`
+	InviteCode string `json:"invite_code"`
 }
 
-// Register POST /api/v1/auth/register（auth-flow §3：注册即自动登录）。
+// Register POST /api/v1/auth/register（auth-flow §3：注册即自动登录；#76 open 版免码）。
 func (h *UserHandler) Register(c *gin.Context) {
 	var req registerReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -46,10 +49,23 @@ func (h *UserHandler) Register(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, user.ErrUsernameTaken), errors.Is(err, user.ErrEmailTaken):
+		case errors.Is(err, user.ErrUsernameTaken):
+			// #76：撞名 409 + 现算建议名（Q4 铁律：每次现算；suggestion 经 seam 取、不进错误对象，§6.2）。
+			// 前端按 code=username_taken 分支做一键采用；建议名探测失败则降级为无 suggestion 的 409。
+			sugg, sErr := h.svc.SuggestNextUsername(c.Request.Context(), req.Username)
+			if sErr != nil {
+				respondError(c, http.StatusConflict, "用户名已被占用")
+				return
+			}
+			c.JSON(http.StatusConflict, gin.H{
+				"error":      "用户名已被占用",
+				"code":       "username_taken",
+				"suggestion": sugg,
+			})
+		case errors.Is(err, user.ErrEmailTaken):
 			respondError(c, http.StatusConflict, "用户名或邮箱已存在")
-		case errors.Is(err, user.ErrInvalidInvite):
-			respondError(c, http.StatusBadRequest, "邀请码无效或已使用")
+		case errors.Is(err, user.ErrEmptyUsername):
+			respondError(c, http.StatusBadRequest, "用户名必填")
 		case errors.Is(err, user.ErrWeakPassword):
 			respondError(c, http.StatusBadRequest, "密码至少 8 位")
 		default:

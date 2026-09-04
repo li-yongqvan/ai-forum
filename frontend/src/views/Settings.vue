@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // 设置（v2：公开页，主题三态游客可用；退出登录仅登录态显示）
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import { useAuthStore } from '../stores/auth'
@@ -9,6 +10,12 @@ import AppIcon from '../components/AppIcon.vue'
 const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
+
+// #76 open 版：占位邮箱不向本人展示伪值（评审 F4/Q6，不变量 #12）——固定文案替代
+const emailLabel = computed(() => {
+  const email = auth.user?.email ?? ''
+  return email.endsWith('@local.invalid') ? '占位邮箱' : email
+})
 
 const THEMES: { key: ThemeMode; label: string; icon: string }[] = [
   { key: 'system', label: '跟随系统', icon: 'sun' },
@@ -46,7 +53,7 @@ async function onLogout() {
     <div class="group" v-if="auth.isLoggedIn">
       <div class="gtitle">账号</div>
       <van-cell-group inset>
-        <van-cell :title="auth.user?.username" :label="auth.user?.email" />
+        <van-cell :title="auth.user?.username" :label="emailLabel" />
         <van-cell title="退出登录" is-link @click="onLogout">
           <template #icon><AppIcon name="lock" :size="18" /></template>
         </van-cell>

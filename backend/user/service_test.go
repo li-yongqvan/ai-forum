@@ -3,6 +3,8 @@ package user
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,13 +21,17 @@ func newService(f *fakeRepo) Service {
 	return NewService(f, fakeIssuer{token: "test-token"})
 }
 
+// placeholderEmailRe 占位邮箱格式（#76 open 版）：u_<16字节32位小写hex>@local.invalid。
+var placeholderEmailRe = regexp.MustCompile(`^u_[0-9a-f]{32}@local\.invalid$`)
+
+// #76 open 版注册主路径：免码（不传邀请码）+ 占位邮箱 + 自动登录。
 func TestRegister_Success(t *testing.T) {
 	f := newFakeRepo()
-	f.seedCode("ABCDEF", 1)
+	f.seedCode("ABCDEF", 1) // 预置一码：验证免码路径不消耗邀请码（不变量 #1）
 	svc := newService(f)
 
 	res, err := svc.Register(context.Background(), RegisterCmd{
-		Username: "alice", Email: "alice@x.edu", Password: "secret123", InviteCode: "ABCDEF",
+		Username: "alice", Password: "secret123",
 	})
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -37,93 +43,304 @@ func TestRegister_Success(t *testing.T) {
 	if res.User.Role != "user" {
 		t.Errorf("Role = %q, want %q", res.User.Role, "user")
 	}
-	// 邀请码已标记使用（一次性）
+	// 免码注册不消耗/不触碰邀请码（不变量 #1）
 	ic, err := f.GetInvitationCode(context.Background(), "ABCDEF")
-	if err != nil || ic.UsedBy == nil {
-		t.Errorf("邀请码应已标记使用，err=%v", err)
+	if err != nil || ic.UsedBy != nil {
+		t.Errorf("免码注册不应消耗邀请码，err=%v usedBy=%v", err, ic.UsedBy)
 	}
-	if *ic.UsedBy != res.User.ID {
-		t.Errorf("UsedBy = %d, want %d", *ic.UsedBy, res.User.ID)
+	// email 忽略入参：统一占位格式
+	if !placeholderEmailRe.MatchString(res.User.Email) {
+		t.Errorf("占位邮箱格式 = %q, want u_<32hex>@local.invalid", res.User.Email)
+	}
+}
+
+// #76 open 版：占位邮箱唯一性——两次注册生成的占位值互不相同（随机 16hex + DB UNIQUE 兜底）。
+func TestRegister_PlaceholderEmailUnique(t *testing.T) {
+	f := newFakeRepo()
+	svc := newService(f)
+	r1, err := svc.Register(context.Background(), RegisterCmd{Username: "alice", Password: "secret123"})
+	if err != nil {
+		t.Fatalf("alice Register() error = %v", err)
+	}
+	r2, err := svc.Register(context.Background(), RegisterCmd{Username: "bob", Password: "secret123"})
+	if err != nil {
+		t.Fatalf("bob Register() error = %v", err)
+	}
+	if r1.User.Email == r2.User.Email {
+		t.Errorf("两次注册占位邮箱不应相同: %q", r1.User.Email)
+	}
+}
+
+// #76 open 版：占位邮箱罕见撞库（users_email_key 23505 → ErrEmailTaken）重试一次，
+// 重试包住整个事务（评审 D2 条件②）。注入生成器首撞后空闲，应恰好调用 2 次且注册成功。
+func TestRegister_PlaceholderEmailRetryOnCollision(t *testing.T) {
+	f := newFakeRepo()
+	f.seedUser("alice", "u_collide@local.invalid", "secret123")
+	orig := newPlaceholderEmail
+	calls := 0
+	newPlaceholderEmail = func() (string, error) {
+		calls++
+		if calls == 1 {
+			return "u_collide@local.invalid", nil // 首次撞库
+		}
+		return "u_fresh@local.invalid", nil
+	}
+	defer func() { newPlaceholderEmail = orig }()
+
+	svc := newService(f)
+	res, err := svc.Register(context.Background(), RegisterCmd{Username: "bob", Password: "secret123"})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if res.User.Email != "u_fresh@local.invalid" {
+		t.Errorf("重试后 email = %q, want u_fresh@local.invalid", res.User.Email)
+	}
+	if calls != 2 {
+		t.Errorf("生成器调用次数 = %d, want 2（重试恰好一次）", calls)
+	}
+}
+
+// #76 open 版：撞库重试至多一次——连续两撞不再重试，ErrEmailTaken 上抛（handler 409）。
+func TestRegister_PlaceholderEmailRetryOnceOnly(t *testing.T) {
+	f := newFakeRepo()
+	f.seedUser("alice", "u_collide@local.invalid", "secret123")
+	orig := newPlaceholderEmail
+	newPlaceholderEmail = func() (string, error) {
+		return "u_collide@local.invalid", nil // 恒撞库
+	}
+	defer func() { newPlaceholderEmail = orig }()
+
+	svc := newService(f)
+	_, err := svc.Register(context.Background(), RegisterCmd{Username: "bob", Password: "secret123"})
+	if !errors.Is(err, ErrEmailTaken) {
+		t.Errorf("error = %v, want ErrEmailTaken（重试至多一次）", err)
 	}
 }
 
 func TestRegister_WeakPassword(t *testing.T) {
 	f := newFakeRepo()
-	f.seedCode("ABCDEF", 1)
 	svc := newService(f)
 
 	_, err := svc.Register(context.Background(), RegisterCmd{
-		Username: "alice", Email: "alice@x.edu", Password: "short", InviteCode: "ABCDEF",
+		Username: "alice", Password: "short",
 	})
 	if !errors.Is(err, ErrWeakPassword) {
 		t.Errorf("error = %v, want ErrWeakPassword", err)
 	}
 }
 
-func TestRegister_InvalidInvite(t *testing.T) {
-	t.Run("不存在的邀请码", func(t *testing.T) {
+// #76 open 版改写（原 TestRegister_InvalidInvite）：免码注册——空/无效/已使用邀请码一律不拦截、
+// 不消耗（断言改验新语义，评审 F2）。
+func TestRegister_IgnoresInviteCode(t *testing.T) {
+	t.Run("无效邀请码不再拒", func(t *testing.T) {
 		f := newFakeRepo()
 		svc := newService(f)
 		_, err := svc.Register(context.Background(), RegisterCmd{
-			Username: "alice", Email: "alice@x.edu", Password: "secret123", InviteCode: "NOPE",
+			Username: "alice", Password: "secret123", InviteCode: "NOPE",
 		})
-		if !errors.Is(err, ErrInvalidInvite) {
-			t.Errorf("error = %v, want ErrInvalidInvite", err)
+		if err != nil {
+			t.Errorf("免码下无效邀请码不应拒, error = %v", err)
 		}
 	})
 
-	t.Run("已使用的邀请码", func(t *testing.T) {
+	t.Run("已使用的邀请码不再拒", func(t *testing.T) {
 		f := newFakeRepo()
 		ic := f.seedCode("ABCDEF", 1)
 		usedBy := int64(99)
 		ic.UsedBy = &usedBy
 		svc := newService(f)
 		_, err := svc.Register(context.Background(), RegisterCmd{
-			Username: "alice", Email: "alice@x.edu", Password: "secret123", InviteCode: "ABCDEF",
+			Username: "alice", Password: "secret123", InviteCode: "ABCDEF",
 		})
-		if !errors.Is(err, ErrInvalidInvite) {
-			t.Errorf("error = %v, want ErrInvalidInvite", err)
+		if err != nil {
+			t.Errorf("免码下已用邀请码不应拒, error = %v", err)
+		}
+	})
+
+	t.Run("邀请码保持未消耗", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedCode("ABCDEF", 1)
+		svc := newService(f)
+		if _, err := svc.Register(context.Background(), RegisterCmd{
+			Username: "alice", Password: "secret123", InviteCode: "ABCDEF",
+		}); err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+		ic, err := f.GetInvitationCode(context.Background(), "ABCDEF")
+		if err != nil || ic.UsedBy != nil {
+			t.Errorf("免码注册不应消耗邀请码，err=%v usedBy=%v", err, ic.UsedBy)
 		}
 	})
 }
 
+// #76 改写（原 TestRegister_EmptyFields）：守卫拆分——trim 后空 username 仍拒（ErrEmptyUsername，
+// handler 400，评审 F5④/不变量 #14）；email 忽略入参，空值放行。
 func TestRegister_EmptyFields(t *testing.T) {
-	f := newFakeRepo()
-	f.seedCode("ABCDEF", 1)
-	svc := newService(f)
-
-	_, err := svc.Register(context.Background(), RegisterCmd{
-		Username: "", Email: "alice@x.edu", Password: "secret123", InviteCode: "ABCDEF",
+	t.Run("空用户名拒（ErrEmptyUsername）", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		_, err := svc.Register(context.Background(), RegisterCmd{
+			Username: "", Password: "secret123",
+		})
+		if !errors.Is(err, ErrEmptyUsername) {
+			t.Errorf("error = %v, want ErrEmptyUsername", err)
+		}
 	})
-	if err == nil {
-		t.Error("空用户名应报错")
-	}
+
+	t.Run("纯空白用户名拒（required 对空格放行，靠 service 守卫）", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		_, err := svc.Register(context.Background(), RegisterCmd{
+			Username: "   ", Password: "secret123",
+		})
+		if !errors.Is(err, ErrEmptyUsername) {
+			t.Errorf("error = %v, want ErrEmptyUsername", err)
+		}
+	})
+
+	t.Run("空 email 放行（忽略入参生成占位）", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		res, err := svc.Register(context.Background(), RegisterCmd{
+			Username: "alice", Email: "", Password: "secret123",
+		})
+		if err != nil {
+			t.Fatalf("空 email 不应拒, error = %v", err)
+		}
+		if !placeholderEmailRe.MatchString(res.User.Email) {
+			t.Errorf("应生成占位邮箱, got %q", res.User.Email)
+		}
+	})
 }
 
+// #76 改写（原 TestRegister_Duplicate）：用户名重复仍 ErrUsernameTaken（预查 + 23505 兜底双保险）；
+// email 重复子测改为「忽略入参」——带已占用 email 注册应成功（占位邮箱生成）。
 func TestRegister_Duplicate(t *testing.T) {
 	t.Run("用户名重复", func(t *testing.T) {
 		f := newFakeRepo()
-		f.seedCode("ABCDEF", 1)
 		f.seedUser("alice", "alice@x.edu", "secret123")
 		svc := newService(f)
 		_, err := svc.Register(context.Background(), RegisterCmd{
-			Username: "alice", Email: "other@x.edu", Password: "secret123", InviteCode: "ABCDEF",
+			Username: "alice", Password: "secret123",
 		})
 		if !errors.Is(err, ErrUsernameTaken) {
 			t.Errorf("error = %v, want ErrUsernameTaken", err)
 		}
 	})
 
-	t.Run("邮箱重复", func(t *testing.T) {
+	t.Run("email 重复忽略入参（不再 ErrEmailTaken）", func(t *testing.T) {
 		f := newFakeRepo()
-		f.seedCode("ABCDEF", 1)
 		f.seedUser("alice", "alice@x.edu", "secret123")
 		svc := newService(f)
-		_, err := svc.Register(context.Background(), RegisterCmd{
-			Username: "bob", Email: "alice@x.edu", Password: "secret123", InviteCode: "ABCDEF",
+		res, err := svc.Register(context.Background(), RegisterCmd{
+			Username: "bob", Email: "alice@x.edu", Password: "secret123",
 		})
-		if !errors.Is(err, ErrEmailTaken) {
-			t.Errorf("error = %v, want ErrEmailTaken", err)
+		if err != nil {
+			t.Fatalf("email 忽略入参, error = %v", err)
+		}
+		if res.User.Email == "alice@x.edu" {
+			t.Errorf("应生成占位邮箱而非复用入参, got %q", res.User.Email)
+		}
+	})
+
+	t.Run("banned 用户也占用名字（判重口径）", func(t *testing.T) {
+		f := newFakeRepo()
+		u := f.seedUser("alice", "alice@x.edu", "secret123")
+		u.Status = "banned"
+		svc := newService(f)
+		_, err := svc.Register(context.Background(), RegisterCmd{
+			Username: "alice", Password: "secret123",
+		})
+		if !errors.Is(err, ErrUsernameTaken) {
+			t.Errorf("error = %v, want ErrUsernameTaken（banned 占用名字）", err)
+		}
+	})
+}
+
+// #76 D4：建议名 seam——顺序取空闲、banned 占用、≤64 截断（不变量 #13）。
+func TestSuggestNextUsername(t *testing.T) {
+	t.Run("空闲名 → name_2", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedUser("alice", "a@x.edu", "secret123")
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), "alice")
+		if err != nil || sugg != "alice_2" {
+			t.Errorf("SuggestNextUsername() = %q, %v, want alice_2", sugg, err)
+		}
+	})
+
+	t.Run("name_2 已占用 → name_3", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedUser("alice", "a@x.edu", "secret123")
+		f.seedUser("alice_2", "a2@x.edu", "secret123")
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), "alice")
+		if err != nil || sugg != "alice_3" {
+			t.Errorf("SuggestNextUsername() = %q, %v, want alice_3", sugg, err)
+		}
+	})
+
+	t.Run("banned 用户占用名字（探测口径与 Register 判重一致）", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedUser("alice", "a@x.edu", "secret123")
+		a2 := f.seedUser("alice_2", "a2@x.edu", "secret123")
+		a2.Status = "banned"
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), "alice")
+		if err != nil || sugg != "alice_3" {
+			t.Errorf("SuggestNextUsername() = %q, %v, want alice_3（banned 不放行）", sugg, err)
+		}
+	})
+
+	t.Run("软删用户不占建议名", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedUser("alice", "a@x.edu", "secret123")
+		a2 := f.seedUser("alice_2", "a2@x.edu", "secret123")
+		a2.DeletedAt = gorm.DeletedAt{Valid: true}
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), "alice")
+		if err != nil || sugg != "alice_2" {
+			t.Errorf("SuggestNextUsername() = %q, %v, want alice_2（软删不占）", sugg, err)
+		}
+	})
+
+	t.Run("64 字符原名截断后建议名 ≤64", func(t *testing.T) {
+		f := newFakeRepo()
+		long := strings.Repeat("a", 64)
+		f.seedUser(long, "a@x.edu", "secret123")
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), long)
+		if err != nil {
+			t.Fatalf("SuggestNextUsername() error = %v", err)
+		}
+		if n := len(sugg); n > maxUsernameLen {
+			t.Errorf("建议名长度 = %d, want ≤%d（防 22001→500）", n, maxUsernameLen)
+		}
+		if !strings.HasSuffix(sugg, "_2") {
+			t.Errorf("建议名 = %q, want 以 _2 结尾", sugg)
+		}
+	})
+
+	t.Run("中文名按字符截断 ≤64（PG VARCHAR 按字符计）", func(t *testing.T) {
+		f := newFakeRepo()
+		long := strings.Repeat("中", 70)
+		f.seedUser(long, "a@x.edu", "secret123")
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), long)
+		if err != nil {
+			t.Fatalf("SuggestNextUsername() error = %v", err)
+		}
+		if n := len([]rune(sugg)); n > maxUsernameLen {
+			t.Errorf("建议名字符数 = %d, want ≤%d", n, maxUsernameLen)
+		}
+	})
+
+	t.Run("空名兜底 user 前缀", func(t *testing.T) {
+		f := newFakeRepo()
+		svc := newService(f)
+		sugg, err := svc.SuggestNextUsername(context.Background(), "  ")
+		if err != nil || sugg != "user_2" {
+			t.Errorf("SuggestNextUsername(空) = %q, %v, want user_2", sugg, err)
 		}
 	})
 }

@@ -2,7 +2,11 @@ package user
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +67,7 @@ type AuthResult struct {
 var (
 	ErrUsernameTaken  = errors.New("user: 用户名已存在")
 	ErrEmailTaken     = errors.New("user: 邮箱已存在")
+	ErrEmptyUsername  = errors.New("user: 用户名必填") // #76 open 版：trim 后空 username 守卫（评审 F5④）
 	ErrInvalidInvite  = errors.New("user: 邀请码无效或已使用")
 	ErrWeakPassword   = errors.New("user: 密码至少 8 位")
 	ErrBadCredential  = errors.New("user: 用户名或密码错误")
@@ -98,6 +103,9 @@ type Service interface {
 	GetUser(ctx context.Context, id int64) (UserView, error)
 	// GetUserByUsername 按用户名查「存在且 active」的用户（#72 提及解析）。不存在/封禁/软删 → ErrNotFound。
 	GetUserByUsername(ctx context.Context, username string) (UserView, error)
+	// SuggestNextUsername 为被占用用户名生成下一个可用建议名（#76 D4：撞名 409 + 前端一键采用）。
+	// 探测口径与 Register 判重一致：任何非软删用户（含 banned）均占用名字；建议名按字符截断保证 ≤64。
+	SuggestNextUsername(ctx context.Context, username string) (string, error)
 	// FollowedUserIDs 返回某用户关注的用户 id 列表（供 content 构造关注流，#4 进程内调用）。
 	FollowedUserIDs(ctx context.Context, userID int64) ([]int64, error)
 	// FollowsUser 判断 followerID 是否已关注 targetID（供 content 构造 viewer.following_author）。
@@ -153,6 +161,26 @@ type UserFollowViewer struct {
 
 const minPasswordLen = 8
 
+// maxUsernameLen users.username VARCHAR(64)（migrations/0001_user_schema.sql:8；PG 按字符计）。
+const maxUsernameLen = 64
+
+// suggestProbeLimit 建议名探测上限（防极端占名下无界 DB 探测；耗尽由 handler 降级为无 suggestion 的 409）。
+const suggestProbeLimit = 1000
+
+// placeholderEmailDomain 占位邮箱域（#76 open 版：email 列 NOT NULL UNIQUE 死字段、零迁移，
+// 注册统一生成占位值填充；事后识别只靠 created_at 窗口，ADR-0002）。
+const placeholderEmailDomain = "@local.invalid"
+
+// newPlaceholderEmail 生成 u_<16字节随机hex>@local.invalid（crypto/rand；总长 47 ≤ VARCHAR(128)）。
+// var 以便单测注入「首次撞库」样本验证重试路径（评审 D2 条件②：重试包住整个事务）。
+var newPlaceholderEmail = func() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("user: 生成占位邮箱失败: %w", err)
+	}
+	return "u_" + hex.EncodeToString(b[:]) + placeholderEmailDomain, nil
+}
+
 type service struct {
 	repo  Repo
 	token TokenIssuer
@@ -166,15 +194,18 @@ func NewService(repo Repo, token TokenIssuer) Service {
 var _ Service = (*service)(nil)
 
 // Register 注册并自动登录（auth-flow §3：注册成功直接返回 token）。
-// 建用户 + 标记邀请码在同一事务内完成，保证「邀请码一次性」的审计不变量（标记失败则整单回滚）。
+// #76 open 版（一次性改动，随 open commit git revert 整体还原）：免码注册——跳过邀请码校验/标记，
+// 邀请码数据与一次性约束不动（不变量 #1）；email 忽略入参、统一生成占位邮箱。占位邮箱撞库
+// （users_email_key 23505，概率 2^-128）重试一次，重试包住整个事务（评审 D2 条件②）。
+// 并发抢名由 DB UNIQUE + gorm_repo 23505→ErrUsernameTaken 兜底（D8），输家拿 409 而非 500。
 func (s *service) Register(ctx context.Context, in RegisterCmd) (AuthResult, error) {
 	username := strings.TrimSpace(in.Username)
-	email := strings.TrimSpace(in.Email)
 	if len(in.Password) < minPasswordLen {
 		return AuthResult{}, ErrWeakPassword
 	}
-	if username == "" || email == "" {
-		return AuthResult{}, errors.New("user: 用户名与邮箱必填")
+	// binding:"required" 对 "   " 放行：trim 后空若不守卫会插空串撞 users_username_key、被误判撞名（评审 F5④）
+	if username == "" {
+		return AuthResult{}, ErrEmptyUsername
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
@@ -183,45 +214,69 @@ func (s *service) Register(ctx context.Context, in RegisterCmd) (AuthResult, err
 	}
 
 	var created *User
-	err = s.repo.Tx(ctx, func(repo Repo) error {
-		// 邀请码准入：一次性；已用/不存在一律 ErrInvalidInvite
-		code, err := repo.GetInvitationCode(ctx, strings.TrimSpace(in.InviteCode))
-		if err != nil || code.UsedBy != nil {
-			return ErrInvalidInvite
+	for attempt := 0; ; attempt++ {
+		email, err := newPlaceholderEmail()
+		if err != nil {
+			return AuthResult{}, err
 		}
-		// 用户名/邮箱全局唯一
-		if _, err := repo.GetUserByUsername(ctx, username); err == nil {
-			return ErrUsernameTaken
-		} else if !errors.Is(err, ErrNotFound) {
-			return err
+		err = s.repo.Tx(ctx, func(repo Repo) error {
+			// 用户名全局唯一预查（含 banned，同一 repo 口径）；先查给出确定性 409，真并发竞态由 23505 兜底
+			if _, err := repo.GetUserByUsername(ctx, username); err == nil {
+				return ErrUsernameTaken
+			} else if !errors.Is(err, ErrNotFound) {
+				return err
+			}
+			u := &User{
+				Username:     username,
+				Email:        email, // 占位邮箱（open 版忽略入参 email）
+				PasswordHash: string(hash),
+				Role:         "member",
+				Status:       "active",
+			}
+			if err := repo.CreateUser(ctx, u); err != nil {
+				return err
+			}
+			created = u
+			return nil
+		})
+		if err == nil {
+			return s.issueAuth(created)
 		}
-		if _, err := repo.GetUserByEmail(ctx, email); err == nil {
-			return ErrEmailTaken
-		} else if !errors.Is(err, ErrNotFound) {
-			return err
+		// 占位邮箱罕见撞库：换一个重试，至多一次
+		if errors.Is(err, ErrEmailTaken) && attempt == 0 {
+			continue
 		}
-
-		u := &User{
-			Username:     username,
-			Email:        email,
-			PasswordHash: string(hash),
-			Role:         "member",
-			Status:       "active",
-		}
-		if err := repo.CreateUser(ctx, u); err != nil {
-			return err
-		}
-		// 同一事务内标记邀请码已用（used_by + used_at，DB CHECK 兜底）
-		if err := repo.MarkInvitationCodeUsed(ctx, code.ID, u.ID); err != nil {
-			return err
-		}
-		created = u
-		return nil
-	})
-	if err != nil {
 		return AuthResult{}, err
 	}
-	return s.issueAuth(created)
+}
+
+// SuggestNextUsername 为被占用用户名生成下一个可用建议名（#76 D4：409 + 前端一键采用）。
+// 探测口径与 Register 判重一致（同一 repo.GetUserByUsername：banned 也占用、软删不占，不变量 #13）；
+// 建议名 = 原名按字符截断 + _<n> 后缀，总长 ≤ maxUsernameLen（PG VARCHAR 按字符计，防 22001→500）。
+// handler 每次撞名 409 现算（Q4 铁律），前端以响应里最新 suggestion 重渲染。
+func (s *service) SuggestNextUsername(ctx context.Context, username string) (string, error) {
+	base := []rune(strings.TrimSpace(username))
+	if len(base) == 0 {
+		base = []rune("user")
+	}
+	for n := 2; n <= suggestProbeLimit; n++ {
+		suffix := "_" + strconv.Itoa(n)
+		room := maxUsernameLen - len(suffix) // 后缀为 ASCII，字符数 == 字节数
+		name := base
+		if len(name) > room {
+			name = name[:room]
+		}
+		cand := string(name) + suffix
+		_, err := s.repo.GetUserByUsername(ctx, cand)
+		if errors.Is(err, ErrNotFound) {
+			return cand, nil // 空闲
+		}
+		if err != nil {
+			return "", err // repo 故障（非 NotFound）上抛
+		}
+		// 已被占用（含 banned）→ 试下一个
+	}
+	return "", errors.New("user: 暂无可用建议名")
 }
 
 // Login 校验用户名+密码（auth-flow §2：失败统一 ErrBadCredential，防枚举）。

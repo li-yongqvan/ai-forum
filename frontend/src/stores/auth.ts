@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { getToken, setToken, setAuthFailureHandler } from '../api/client'
 import * as authApi from '../api/auth'
-import type { AuthUser } from '../api/types'
+import type { AuthUser, RegisterPayload } from '../api/types'
 
 // #34（评审 F1）：注册会话失效钩子——401 / 403 封禁统一经 client 触发，清 Pinia store，
 // 实现「封禁即登出」（仅清 localStorage 不清 store 会导致 isLoggedIn 仍 true）。
@@ -23,12 +23,8 @@ export const useAuthStore = defineStore('auth', {
       this.setSession(res.token, res.user)
       return res
     },
-    async register(payload: {
-      username: string
-      email: string
-      password: string
-      invite_code: string
-    }) {
+    // #76 open 版：免码注册，载荷收窄为 username+password
+    async register(payload: RegisterPayload) {
       const res = await authApi.register(payload)
       this.setSession(res.token, res.user)
       return res
