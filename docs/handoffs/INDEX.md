@@ -24,6 +24,7 @@
 > **#23 收藏/关注列表**：`docs/handoffs/23-favorites-list.md`（接通「我的」页收藏/关注 tab；范围 = 收藏 + 关注，旧底稿「仅收藏/拆 #27」已过时——#27 实为 SOP 落地 PR，不存在关注列表独立 ticket，以 ticket 正文与地图为准）。
 > **#33 举报与处理闭环**：`docs/handoffs/33-report-closure.md`（举报 API + 管理队列 + `report_result` 通知 + 前端入口；依赖通知中心**已满足**；先做第 0 步 grilling 5 决策）。
 > **前端单测进 CI（无 ticket，地图 Roadmap 第 2 项）**：`docs/handoffs/frontend-unit-tests-ci.md`（deploy.yml test job 挂 `npm run test:unit`，`continue-on-error` 过渡转阻塞）。
+> **#76 9/13 一次性免码注册**：grilling 已定稿，决策记录见 [issue-76-temp-open-registration-decisions.md](grilling-decisions/issue-76-temp-open-registration-decisions.md)；设计文档 + 评审意见书在 `docs/plans/issue-76-temp-open-registration-设计文档*.md`（独立评审**有条件通过**，B1 已闭合 2026-09-05）。实现 handoff 待建——执行会话直接以设计文档为基线。
 
 ## 已解决
 
