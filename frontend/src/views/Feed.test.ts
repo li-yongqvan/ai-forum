@@ -7,9 +7,10 @@ import SegTabs from '../components/SegTabs.vue'
 import PostList from '../components/PostList.vue'
 import LoginGuide from '../components/LoginGuide.vue'
 
+const routerState = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock('vue-router', () => ({
   useRoute: () => ({ fullPath: '/feed' }),
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => routerState,
 }))
 vi.mock('../router', () => ({ goLoginWithReturn: vi.fn() }))
 vi.mock('vant', () => ({ showToast: vi.fn() }))
@@ -44,6 +45,21 @@ describe('Feed.vue #61 首页热门流', () => {
     await flushPromises()
     expect(wrapper.findComponent(SegTabs).exists()).toBe(true)
     expect(labels(wrapper)).toEqual(['全部', '热门', '关注'])
+  })
+
+  it('搜索入口壳：位于 SegTabs 之上，点击进入 /search（#78 D8）', async () => {
+    const wrapper = mountFeed(true)
+    await flushPromises()
+    const entry = wrapper.find('.sentry')
+    expect(entry.exists()).toBe(true)
+    expect(entry.text()).toContain('搜索帖子')
+    // 入口壳在 SegTabs 之前（DOM 顺序，不依赖桩元素类名）
+    const pos = entry.element.compareDocumentPosition(
+      wrapper.findComponent(SegTabs).element,
+    )
+    expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await entry.trigger('click')
+    expect(routerState.push).toHaveBeenCalledWith('/search')
   })
 
   it('热门 tab：fetcher 调 listPosts({tab:"hot"}) + 空态文案', async () => {

@@ -15,6 +15,7 @@ import ReportSheet from './ReportSheet.vue'
 const props = defineProps<{
   fetcher: (page: number, pageSize: number) => Promise<{ items: Post[] }>
   emptyTitle?: string
+  terms?: string[] // #78 搜索词表，逐卡透传给 PostCard 做高亮（列表本身不解释其语义）
 }>()
 
 const route = useRoute()
@@ -192,6 +193,7 @@ function onMore(p: Post) {
       v-for="p in posts"
       :key="p.id"
       :post="p"
+      :terms="terms"
       @like="onLike"
       @fav="onFav"
       @more="onMore"

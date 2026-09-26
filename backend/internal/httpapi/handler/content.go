@@ -35,7 +35,7 @@ func respondContentError(c *gin.Context, err error) {
 		respondError(c, http.StatusConflict, "重复操作")
 	case errors.Is(err, content.ErrInvalidTargetType), errors.Is(err, content.ErrInvalidFeedTab),
 		errors.Is(err, content.ErrContentEmpty), errors.Is(err, content.ErrParentNotInPost),
-		errors.Is(err, content.ErrTopicNotInBoard):
+		errors.Is(err, content.ErrTopicNotInBoard), errors.Is(err, content.ErrInvalidQuery):
 		respondError(c, http.StatusBadRequest, "参数不合法")
 	default:
 		respondError(c, http.StatusInternalServerError, "服务器内部错误")
@@ -97,7 +97,8 @@ func (h *ContentHandler) ListTopics(c *gin.Context) {
 
 // ---- 帖子 ----
 
-// ListPosts GET /api/v1/posts（信息流/板块/话题/作者过滤）
+// ListPosts GET /api/v1/posts（信息流/板块/话题/作者/标签过滤；#78 加 q 搜索词检索，
+// 搜索态响应额外含 total）。游客可访问（reads 组）。
 func (h *ContentHandler) ListPosts(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -126,12 +127,26 @@ func (h *ContentHandler) ListPosts(c *gin.Context) {
 		// #54 标签过滤：归一化/空值处理由 service seam 层兜底（评审 §5.1-7，避免双处策略）
 		q.Tag = &v
 	}
+	if v := c.Query("q"); v != "" {
+		// #78 搜索词：与 tag 分支同构，handler 只透传，长度/切词/转义校验一律在 service seam 层
+		q.Query = v
+	}
 	views, err := h.svc.ListFeed(c.Request.Context(), q)
 	if err != nil {
 		respondContentError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": views, "page": page, "page_size": pageSize})
+	resp := gin.H{"items": views, "page": page, "page_size": pageSize}
+	if q.Query != "" {
+		// #78 total 仅在搜索态出现（X7）：Feed/标签/作者/板块页响应不含此键。
+		total, err := h.svc.CountFeed(c.Request.Context(), q)
+		if err != nil {
+			respondContentError(c, err)
+			return
+		}
+		resp["total"] = total
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // GetPost GET /api/v1/posts/:id

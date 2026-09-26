@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -83,8 +84,26 @@ func (r *gormRepo) GetPostByID(ctx context.Context, id int64) (*Post, error) {
 	return &p, nil
 }
 
-// ListPosts 信息流/板块/话题/作者列表查询。排序：默认 #9 §5.2「置顶优先 + 时间倒序」；Feed=hot 时 #61「置顶优先 + 热度降序（赞×1+评论×3）+ 时间倒序兜底」。
-func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
+// likePattern 把已归一化的搜索词包成 ILIKE pattern。`%` 的包裹属"检索形态"而非用户输入，
+// 故放 repo 层（NormalizeQuery 只交纯词，设计文档 §6-2）。
+func likePattern(term string) string { return "%" + term + "%" }
+
+// titleHitSQL 构造「标题含全部搜索词」的布尔表达式（多词 AND，与 WHERE 侧同语义）及其绑定值。
+func titleHitExpr(terms []string) (string, []any) {
+	sql := make([]string, 0, len(terms))
+	vars := make([]any, 0, len(terms))
+	for _, t := range terms {
+		sql = append(sql, "title ILIKE ?")
+		vars = append(vars, likePattern(t))
+	}
+	return strings.Join(sql, " AND "), vars
+}
+
+// feedFilter 组装帖子列表的筛选谓词——ListPosts 与 CountFeed 共用，使"结果条数"与"结果列表"
+// 恒为同条件（设计文档 §7-3）。搜索词逐词一个 WHERE 条件（词间 AND，X1）；词值只经占位符进 SQL（§7-4）。
+// 排序/分页不在此（仅 ListPosts 需要）；软删排除也不在此——GORM 对 Post 的默认 scope 自动加
+// deleted_at IS NULL，故搜索态与非搜索态治理口径同源（§7-1、D5）。
+func (r *gormRepo) feedFilter(ctx context.Context, in PostQuery) *gorm.DB {
 	q := r.db.WithContext(ctx).Model(&Post{})
 	if in.AuthorID != nil {
 		q = q.Where("author_id = ?", *in.AuthorID)
@@ -99,21 +118,54 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		// #54 标签过滤：子查询（主查询无 JOIN → 无列遮蔽；软删帖由主查询 deleted_at IS NULL scope 自动排除）
 		q = q.Where("id IN (SELECT pt.post_id FROM content.post_tags pt JOIN content.tags t ON t.id = pt.tag_id WHERE t.name = ?)", *in.Tag)
 	}
+	if len(in.Terms) > 0 {
+		// #78 全文搜索：标题或正文命中该词即算命中；ILIKE = 不区分大小写（X2），词已按字面转义（X1）
+		for _, t := range in.Terms {
+			p := likePattern(t)
+			q = q.Where("(title ILIKE ? OR content ILIKE ?)", p, p)
+		}
+	}
 	if in.Feed == "follow" {
 		// 关注来源聚合：作者/板块/话题任一命中；空集合 → IN (NULL) → 恒 false，正确返回空
 		q = q.Where("author_id IN ? OR board_id IN ? OR topic_id IN ?",
 			in.FollowedUserIDs, in.FollowedBoardIDs, in.FollowedTopicIDs)
 	}
 	if in.Feed == "hot" {
-		// #61 热门流：7 天窗口，热度分 = 赞×1 + 评论×3（likes/comments 不落库，LEFT JOIN 现场聚合）；
-		// 窗口内帖子随热度排序，置顶帖仍恒顶（与全部流行为一致）。评论软删由子查询 deleted_at IS NULL 排除。
-		// 注意：子查询必须预聚合；若直接 JOIN 原始 likes/comments 两表，会因笛卡尔积导致计数互乘。
-		q = q.Select("content.posts.*") // 限定主表列，防 JOIN 表列遮蔽（F8）
+		// #61 热门流 7 天窗口
 		q = q.Where("created_at >= ?", time.Now().Add(-7*24*time.Hour))
-		q = q.Joins("LEFT JOIN (SELECT target_id AS pid, COUNT(*) AS like_cnt FROM content.likes WHERE target_type = 'post' GROUP BY target_id) hot_likes ON hot_likes.pid = content.posts.id")
-		q = q.Joins("LEFT JOIN (SELECT post_id AS pid, COUNT(*) AS cmt_cnt FROM content.comments WHERE deleted_at IS NULL GROUP BY post_id) hot_comments ON hot_comments.pid = content.posts.id")
 	}
-	q = q.Order("is_pinned DESC")
+	return q
+}
+
+// ListPosts 信息流/板块/话题/作者/搜索词列表查询。排序：默认 #9 §5.2「置顶优先 + 时间倒序」；
+// Feed=hot 时 #61「置顶优先 + 热度降序（赞×1+评论×3）+ 时间倒序兜底」；
+// 搜索态（Terms 非空）时改为 D3「标题命中优先 + 时间倒序」，置顶不参与（非搜索态分支逐字节不变）。
+func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
+	q := r.feedFilter(ctx, in)
+	if in.Feed == "hot" || len(in.Terms) > 0 {
+		// 显式限定主表列（F8：防 hot 的 JOIN 列遮蔽；搜索态另挂排序别名列）
+		cols := "content.posts.*"
+		var vars []any
+		if len(in.Terms) > 0 {
+			// 「标题含全部搜索词」物化为排序用布尔列。为何不进 ORDER BY：GORM v1.31.2 的 Order
+			// 只接受列名字符串/OrderByColumn，带参表达式会被 switch 静默丢弃 ⇒ 参数化排序条件只能走 Select。
+			hitSQL, hitVars := titleHitExpr(in.Terms)
+			cols += ", (" + hitSQL + ") AS title_hit"
+			vars = append(vars, hitVars...)
+		}
+		if in.Feed == "hot" {
+			// 热度分来自下面两个预聚合子查询，非表列。
+			// 注意：子查询必须预聚合；若直接 JOIN 原始 likes/comments 两表，会因笛卡尔积导致计数互乘。
+			q = q.Joins("LEFT JOIN (SELECT target_id AS pid, COUNT(*) AS like_cnt FROM content.likes WHERE target_type = 'post' GROUP BY target_id) hot_likes ON hot_likes.pid = content.posts.id")
+			q = q.Joins("LEFT JOIN (SELECT post_id AS pid, COUNT(*) AS cmt_cnt FROM content.comments WHERE deleted_at IS NULL GROUP BY post_id) hot_comments ON hot_comments.pid = content.posts.id")
+		}
+		q = q.Select(cols, vars...)
+	}
+	if len(in.Terms) > 0 {
+		q = q.Order("title_hit DESC") // true 排前（D3）；PostgreSQL 允许按 SELECT 别名排序
+	} else {
+		q = q.Order("is_pinned DESC")
+	}
 	if in.Feed == "hot" {
 		// 热度分降序；同分按时间倒序兜底。详见 fake_repo_test.go 的 commentWeight 常量。
 		q = q.Order("(COALESCE(hot_likes.like_cnt, 0) + 3 * COALESCE(hot_comments.cmt_cnt, 0)) DESC")
@@ -130,6 +182,15 @@ func (r *gormRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		return nil, err
 	}
 	return posts, nil
+}
+
+// CountFeed 与 ListPosts 共用 feedFilter ⇒ 条件恒等（§7-3）；排序与分页对计数无意义，故不带。
+func (r *gormRepo) CountFeed(ctx context.Context, in PostQuery) (int64, error) {
+	var n int64
+	if err := r.feedFilter(ctx, in).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (r *gormRepo) DeletePost(ctx context.Context, id int64) error {

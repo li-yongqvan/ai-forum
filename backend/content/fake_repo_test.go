@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -91,6 +92,11 @@ func withCreatedAt(t time.Time) postOpt {
 	return func(p *Post) { p.CreatedAt = t }
 }
 
+// withText 设标题与正文（#78 搜索词过滤用例用）
+func withText(title, content string) postOpt {
+	return func(p *Post) { p.Title, p.Content = title, content }
+}
+
 func (f *fakeRepo) seedPost(id, authorID, boardID int64, opts ...postOpt) *Post {
 	p := &Post{ID: id, AuthorID: authorID, BoardID: boardID, CreatedAt: time.Now()}
 	for _, o := range opts {
@@ -156,7 +162,9 @@ func (f *fakeRepo) GetPostByID(ctx context.Context, id int64) (*Post, error) {
 	return &cp, nil
 }
 
-func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
+// matchPosts 应用 PostQuery 的全部筛选谓词（不含排序/分页）——ListPosts 与 CountFeed 共用，
+// 镜像 gormRepo.feedFilter 的"同条件"契约（设计文档 §7-3）。
+func (f *fakeRepo) matchPosts(in PostQuery) []*Post {
 	out := make([]*Post, 0)
 	for _, p := range f.posts {
 		if p.DeletedAt.Valid {
@@ -174,6 +182,9 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		if in.Tag != nil && !stringContains(f.tagPosts[p.ID], *in.Tag) {
 			continue
 		}
+		if !matchTermsNaive(p, in.Terms) {
+			continue
+		}
 		if in.Feed == "follow" {
 			inUsers := contains(in.FollowedUserIDs, p.AuthorID)
 			inBoards := contains(in.FollowedBoardIDs, p.BoardID)
@@ -188,8 +199,42 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		}
 		out = append(out, p)
 	}
+	return out
+}
+
+// matchTermsNaive 是 #78 搜索词过滤的**朴素**实现：大小写敏感、不认 ILIKE 转义，
+// 与真库 `ILIKE '%词%'` 不等价。fake 只支撑"归一化 + 透传 + 分页 + 同条件计数"，
+// 检索语义由 handler 层的 testcontainers 真 PG 集成测试钉死（设计文档 §5.1-9）。
+func matchTermsNaive(p *Post, terms []string) bool {
+	for _, t := range terms {
+		if !strings.Contains(p.Title, t) && !strings.Contains(p.Content, t) {
+			return false
+		}
+	}
+	return true
+}
+
+func titleHit(p *Post, terms []string) bool {
+	for _, t := range terms {
+		if !strings.Contains(p.Title, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// ListPosts 排序：非搜索态 = 置顶优先 + 时间倒序（hot 时中间插热度）；
+// 搜索态（Terms 非空）= 标题命中优先 + 时间倒序，置顶不参与（#78 D3）。
+func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error) {
+	out := f.matchPosts(in)
+	searching := len(in.Terms) > 0
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].IsPinned != out[j].IsPinned {
+		if searching {
+			hi, hj := titleHit(out[i], in.Terms), titleHit(out[j], in.Terms)
+			if hi != hj {
+				return hi
+			}
+		} else if out[i].IsPinned != out[j].IsPinned {
 			return out[i].IsPinned
 		}
 		if in.Feed == "hot" {
@@ -209,6 +254,11 @@ func (f *fakeRepo) ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
 		out = out[in.Offset:]
 	}
 	return out, nil
+}
+
+// CountFeed 与 ListPosts 共用 matchPosts ⇒ 条件恒等；排序/分页对计数无意义。
+func (f *fakeRepo) CountFeed(ctx context.Context, in PostQuery) (int64, error) {
+	return int64(len(f.matchPosts(in))), nil
 }
 
 // commentWeight 是 #61 热度公式中「评论」相对「赞」的权重。

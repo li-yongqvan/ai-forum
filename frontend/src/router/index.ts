@@ -19,6 +19,8 @@ const router = createRouter({
     { path: '/reports', component: () => import('../views/Reports.vue'), meta: { title: '举报管理', requireAuth: true } },
     { path: '/settings', component: () => import('../views/Settings.vue'), meta: { title: '设置' } },
     { path: '/tag/:name', component: () => import('../views/TagDetail.vue'), meta: { title: '标签' } },
+    // #78 搜索页：L2（App.vue 的 L1 是白名单，不登记即自动隐藏底 Tab + 显示返回箭头）；游客可搜故不加 requireAuth（D4）
+    { path: '/search', component: () => import('../views/Search.vue'), meta: { title: '搜索' } },
     { path: '/', redirect: '/feed' },
     { path: '/:pathMatch(.*)*', redirect: '/feed' },
   ],

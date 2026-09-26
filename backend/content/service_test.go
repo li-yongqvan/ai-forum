@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1122,4 +1123,191 @@ func TestCreateCommentMentions(t *testing.T) {
 			t.Errorf("mentions rows = %d, want 0（删评论清理）", len(f.mentions))
 		}
 	})
+}
+
+// ---- #78 搜索词：归一化 / 透传 / 分页 / 同条件计数 ----
+//
+// 本文件只钉"归一化 + 透传 + 分页 + 同条件"。检索语义（ILIKE 大小写、通配符转义、中文子串召回）
+// **不在这里证明**——fake 的匹配是朴素 strings.Contains，与真库不等价，语义由 handler 层
+// testcontainers 真 PG 集成测试钉死（设计文档 §5.1-9、SOP §7）。
+
+func TestNormalizeQuery(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    []string
+		wantErr bool
+	}{
+		{"单词", "论坛", []string{"论坛"}, false},
+		{"首尾空白被裁", "  智联论坛 \t", []string{"智联论坛"}, false},
+		{"多词按空白切分", "论坛 搜索", []string{"论坛", "搜索"}, false},
+		{"连续多空格不产生空词", "论坛   搜索", []string{"论坛", "搜索"}, false},
+		{"全角空格也是分隔符", "论坛　搜索", []string{"论坛", "搜索"}, false},
+		{"大小写原样保留（不区分由 ILIKE 负责）", "AI Agent", []string{"AI", "Agent"}, false},
+		{"% 转义为字面", "100%", []string{`100\%`}, false},
+		{"_ 转义为字面", "a_b", []string{`a\_b`}, false},
+		{"反斜杠转义为字面", `a\b`, []string{`a\\b`}, false},
+		// 顺序钉死：先 \ 再 %/_。若先转 %，`%\_` 会产出 `\%\\\_`以外的错值（设计文档 §6-2）。
+		{"混合字符转义顺序", `%\_`, []string{`\%\\\_`}, false},
+		{"四词允许", "a b c d", []string{"a", "b", "c", "d"}, false},
+		{"五词拒绝", "a b c d e", nil, true},
+		{"单码点拒绝", "论", nil, true},
+		{"trim 后为空拒绝", "   ", nil, true},
+		{"64 码点允许", strings.Repeat("论", 64), []string{strings.Repeat("论", 64)}, false},
+		{"65 码点拒绝", strings.Repeat("论", 65), nil, true},
+		// 30 个汉字 = 90 字节：按字节会被误判超长，按码点合法（X1 的"字符"= 码点）
+		{"长度按码点而非字节", strings.Repeat("论", 30), []string{strings.Repeat("论", 30)}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := NormalizeQuery(c.raw)
+			if c.wantErr {
+				if !errors.Is(err, ErrInvalidQuery) {
+					t.Fatalf("NormalizeQuery(%q) err = %v, want ErrInvalidQuery", c.raw, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NormalizeQuery(%q) err = %v", c.raw, err)
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("NormalizeQuery(%q) = %q, want %q", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSearchFeedTerms(t *testing.T) {
+	base := time.Now().Add(-48 * time.Hour)
+	newFixture := func() (*fakeRepo, Service) {
+		f, svc := newContentService()
+		f.seedPost(1, 1, 1, withText("智联论坛 第3期", "正文提到搜索"), withCreatedAt(base.Add(1*time.Hour)))
+		f.seedPost(2, 1, 1, withText("另一帖", "正文里有 搜索 两个字"), withCreatedAt(base.Add(2*time.Hour)))
+		f.seedPost(3, 2, 2, withText("无关帖", "正文与本次检索毫无共同词"), withCreatedAt(base))
+		return f, svc
+	}
+
+	t.Run("搜索词透传到 repo：标题或正文命中才出", func(t *testing.T) {
+		_, svc := newFixture()
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "搜索", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 2 || views[0].ID != 2 || views[1].ID != 1 {
+			t.Errorf("命中 = %v, want [2 1]（搜索态标题命中优先 ⇒ 2 无标题命中按时间，1 次之）", idsOf(views))
+		}
+	})
+
+	t.Run("多词 AND：两词都在同一帖才命中", func(t *testing.T) {
+		_, svc := newFixture()
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "智联 搜索", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 1 {
+			t.Errorf("命中 = %v, want [1]", idsOf(views))
+		}
+	})
+
+	t.Run("非法搜索词在 service seam 即拒（handler 不校验）", func(t *testing.T) {
+		_, svc := newFixture()
+		if _, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "论"}); !errors.Is(err, ErrInvalidQuery) {
+			t.Errorf("ListFeed(单字) err = %v, want ErrInvalidQuery", err)
+		}
+		if _, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "a b c d e"}); !errors.Is(err, ErrInvalidQuery) {
+			t.Errorf("ListFeed(五词) err = %v, want ErrInvalidQuery", err)
+		}
+	})
+
+	t.Run("CountFeed 与 ListFeed 同条件（§7-3）", func(t *testing.T) {
+		_, svc := newFixture()
+		in := ListFeedQuery{Tab: "all", Query: "搜索", PageSize: 20}
+		views, err := svc.ListFeed(ctx(), in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, err := svc.CountFeed(ctx(), in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int(total) != len(views) {
+			t.Errorf("total = %d, want %d（items 数）", total, len(views))
+		}
+	})
+
+	t.Run("total 不参与翻页：第二页仍为全量数", func(t *testing.T) {
+		_, svc := newFixture()
+		total, err := svc.CountFeed(ctx(), ListFeedQuery{Tab: "all", Query: "搜索", Page: 2, PageSize: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != 2 {
+			t.Errorf("total = %d, want 2（与页码无关）", total)
+		}
+	})
+
+	t.Run("非搜索态排序仍含置顶优先（§7-2）", func(t *testing.T) {
+		f, svc := newFixture()
+		if err := f.UpdatePostPinned(ctx(), 3, true); err != nil {
+			t.Fatal(err)
+		}
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if views[0].ID != 3 {
+			t.Errorf("非搜索态首条 = %d, want 3（置顶优先未被搜索分支影响）", views[0].ID)
+		}
+		// 搜索态下同一置顶帖不得插队（D3）
+		sv, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "搜索", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range sv {
+			if v.ID == 3 {
+				t.Errorf("搜索态意外召回置顶帖 3（不含搜索词）")
+			}
+		}
+	})
+
+	t.Run("软删帖不召回且不计入 total（§7-1 同一构造器）", func(t *testing.T) {
+		f, svc := newFixture()
+		if err := f.DeletePost(ctx(), 1); err != nil {
+			t.Fatal(err)
+		}
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "搜索", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, err := svc.CountFeed(ctx(), ListFeedQuery{Tab: "all", Query: "搜索", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].ID != 2 || total != 1 {
+			t.Errorf("软删后 items = %v total = %d, want [2] 1", idsOf(views), total)
+		}
+	})
+
+	t.Run("作者查不到时降级显示已注销（D5 不为搜索加治理过滤）", func(t *testing.T) {
+		f := newFakeRepo()
+		f.seedBoard(1, "学习讨论")
+		// names 里刻意不含 9：GetUserView 失败 → "已注销"
+		svc := newServiceWith(f, fakeUsers{names: map[int64]string{}})
+		f.seedPost(1, 9, 1, withText("注销作者的帖", "含搜索词"))
+		views, err := svc.ListFeed(ctx(), ListFeedQuery{Tab: "all", Query: "搜索", PageSize: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(views) != 1 || views[0].AuthorName != "已注销" {
+			t.Errorf("items = %+v, want 1 条且作者名 已注销", views)
+		}
+	})
+}
+
+func idsOf(views []PostView) []int64 {
+	out := make([]int64, 0, len(views))
+	for _, v := range views {
+		out = append(out, v.ID)
+	}
+	return out
 }
