@@ -12,6 +12,8 @@ import { deriveTerms } from '../utils/highlight'
 const route = useRoute()
 const router = useRouter()
 
+// 三个数字镜像 backend/content/service.go 的 minQueryRunes/maxQueryRunes/maxQueryWords：
+// 6-3 点名要求前端把越界翻成可读提示（如"最多 4 个搜索词"），服务端仍是唯一权威。
 const MIN_LEN = 2
 const MAX_LEN = 64
 const MAX_WORDS = 4

@@ -145,9 +145,9 @@ describe('hitWindow（X6 命中上下文片段）', () => {
     expect(w.text.length).toBe(2 + 40)
   })
 
-  it('命中在中间 ⇒ 前后各 radius 字，两端加裁切标记', () => {
+  it('命中在中间 ⇒ 前后各 40 字，两端加裁切标记', () => {
     const text = 'a'.repeat(100) + '论坛' + 'b'.repeat(100)
-    const w = hitWindow(text, ['论坛'], 40)
+    const w = hitWindow(text, ['论坛'])
     expect(w).toEqual({ text: 'a'.repeat(40) + '论坛' + 'b'.repeat(40), headCut: true, tailCut: true })
   })
 

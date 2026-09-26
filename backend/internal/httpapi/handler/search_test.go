@@ -148,6 +148,25 @@ func TestSearchPosts(t *testing.T) {
 		}
 	})
 
+	// 设计文档 §1 只说"标题命中排前"，§5.1-4 的伪码用 terms[0] 一个词判"标题命中"。
+	// 实现取更严的口径：标题须含**全部**词才算标题命中（否则多词查询里"只碰巧带了第一个词"
+	// 的标题会压过完整命中的标题）。这条用例把口径钉死——按 terms[0] 实现会翻成 B 在前。
+	t.Run("2b 多词时标题命中优先按全部词判定", func(t *testing.T) {
+		reset()
+		full := mustCreatePost(t, r, tok, "论坛 搜索 上线", "正文无关") // 标题含全部两词（更早发布）
+		part := mustCreatePost(t, r, tok, "论坛周刊", "正文提到搜索一词") // 标题只含首词（更晚发布）
+		if full.ID == part.ID {
+			t.Fatal("两条帖子 id 相同，用例数据不成立")
+		}
+		got, _ := searchGet(t, r, "q="+urlQuery("论坛 搜索"), tok)
+		if len(got.Items) != 2 {
+			t.Fatalf("命中 = %v, want 2 条", titlesOf(got))
+		}
+		if got.Items[0].Title != "论坛 搜索 上线" {
+			t.Errorf("首位 = %q, want 论坛 搜索 上线（标题含全部词者优先，而非按 created_at 排在后的那条）", got.Items[0].Title)
+		}
+	})
+
 	t.Run("3 多词 AND", func(t *testing.T) {
 		reset()
 		mustCreatePost(t, r, tok, "论坛公告", "正文含搜索")  // 两词分散在标题+正文 ⇒ 每词各自命中 ⇒ 命中
@@ -292,6 +311,10 @@ func TestSearchPosts(t *testing.T) {
 			{"短于 2 码点", "q=" + urlQuery("论")},
 			{"超过 64 码点", "q=" + urlQuery(strings.Repeat("论", 65))},
 			{"超过 4 词", "q=" + urlQuery("a b c d e")},
+			// 纯空白：§7-2 写"trim 后为空 ⇒ 走非搜索态"，6-3 写"越界一律拒绝、不静默"。
+			// 二者在此冲突，取 6-3（分享一个 q=空格 的链接若静默变成全站 Feed，比报错更坏）；
+			// 前端 Search.vue 的 invalidTip 已先拦住，这条钉的是绕过前端的直接请求。
+			{"纯空白（§7-2/6-3 冲突取拒绝）", "q=" + urlQuery("   ")},
 		}
 		for _, c := range cases {
 			w := doJSON(t, r, http.MethodGet, "/api/v1/posts?"+c.query, nil, tok)

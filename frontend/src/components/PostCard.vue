@@ -25,6 +25,8 @@ const go = () => router.push(`/post/${props.post.id}`)
 const titleSegs = computed(() => splitByTerms(props.post.title, props.terms ?? []))
 const abstractSegs = computed(() => {
   const plain = plainText(props.post.content)
+  // 短路而非交给 hitWindow + splitByTerms 兜底：那两个函数对空正文返回 **0 段**（splitByTerms 首行），
+  // 而改造前的实现是 `{{ plainText(...) }}`，恒有一个（可能为空的）文本节点 ⇒ 少一个节点即违反 §7-5。
   if (!props.terms?.length) return [{ text: plain, hit: false }]
   // X6：正文里定位最先出现的命中词，前后各约 40 字；仅标题命中时窗口不切（回落两行截断）
   const w = hitWindow(plain, props.terms)

@@ -60,18 +60,19 @@ export function splitByTerms(text: string, terms: string[]): Segment[] {
   return out
 }
 
-export interface Window {
+export interface Snippet {
   text: string
   headCut: boolean
   tailCut: boolean
 }
 
 /**
- * hitWindow：X6 的命中上下文片段——定位 text 中**最先出现**的命中词，取前后各 radius 字。
+ * hitWindow：X6 的命中上下文片段——定位 text 中**最先出现**的命中词，前后各取 radius 字
+ * （默认 SNIPPET_RADIUS；单测用小 radius 才能把边界压进代理对里）。
  * 无命中（仅标题命中的帖子）⇒ headCut/tailCut 均 false、原样返回，调用方回落到既有两行截断。
  */
-export function hitWindow(text: string, terms: string[], radius = SNIPPET_RADIUS): Window {
-  const whole: Window = { text, headCut: false, tailCut: false }
+export function hitWindow(text: string, terms: string[], radius = SNIPPET_RADIUS): Snippet {
+  const whole: Snippet = { text, headCut: false, tailCut: false }
   if (!text) return whole
   const lower = text.toLowerCase()
   let at = -1
