@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- 命令 / 读模型 DTO ----
@@ -124,6 +125,7 @@ type ListFeedQuery struct {
 	BoardID  *int64
 	TopicID  *int64
 	Tag      *string // #54 标签过滤（归一化小写名）
+	Query    string  // #78 搜索词（原样字符串：未 trim、未切词、未转义；归一化在本 seam 层）
 	Page     int
 	PageSize int
 }
@@ -206,6 +208,7 @@ var (
 	ErrInvalidFeedTab        = errors.New("content: 信息流 tab 非法")
 	ErrContentEmpty          = errors.New("content: 内容不能为空")
 	ErrMentionedUserNotFound = errors.New("content: 被提及用户不存在或不可用")
+	ErrInvalidQuery          = errors.New("content: 搜索词不合法") // #78：长度 2..64 码点、词数 ≤4，超出即拒绝（不静默截断）
 )
 
 // ---- Service 接口（粗粒度命令 + 读模型查询，#4/#7） ----
@@ -257,6 +260,9 @@ type Service interface {
 	// GetComment 按 id 返回单条评论读模型（治理域 enrich/处理用，#33 S4）。
 	GetComment(ctx context.Context, id int64) (CommentView, error)
 	ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error)
+	// CountFeed 返回与 ListFeed **同一筛选条件**下的帖子总数（#78 搜索结果条数）。
+	// 仅搜索态需要；不参与翻页（分页仍由 ListFeed 的 offset/limit 决定）。
+	CountFeed(ctx context.Context, in ListFeedQuery) (int64, error)
 	GetCommentTree(ctx context.Context, postID int64) (CommentTreeView, error)
 	ListBoards(ctx context.Context, viewerID int64) ([]BoardView, error)
 	ListTopics(ctx context.Context, viewerID int64, boardID *int64) ([]TopicView, error)
@@ -611,6 +617,29 @@ func (s *service) GetComment(ctx context.Context, id int64) (CommentView, error)
 }
 
 func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, error) {
+	q, err := s.buildFeedQuery(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	posts, err := s.repo.ListPosts(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return s.postViews(ctx, posts, in.ViewerID)
+}
+
+// CountFeed 返回与 ListFeed 同一筛选条件下的帖子总数（#78 搜索态结果条数）。
+func (s *service) CountFeed(ctx context.Context, in ListFeedQuery) (int64, error) {
+	q, err := s.buildFeedQuery(ctx, in)
+	if err != nil {
+		return 0, err
+	}
+	return s.repo.CountFeed(ctx, q)
+}
+
+// buildFeedQuery 把 ListFeedQuery 归一化为 repo 层的 PostQuery。ListFeed 与 CountFeed 共用此构造器，
+// 使「结果条数」与「结果列表」恒为同条件（设计文档 §7-3）；两者仅差 offset/limit，计数忽略之。
+func (s *service) buildFeedQuery(ctx context.Context, in ListFeedQuery) (PostQuery, error) {
 	page := in.Page
 	if page < 1 {
 		page = 1
@@ -629,6 +658,14 @@ func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, e
 			q.Tag = &t
 		}
 	}
+	if in.Query != "" {
+		// #78 搜索词：校验/切词/转义同样在 seam 层兜底，handler 只透传（设计文档 §6-1，与 tag 同构）
+		terms, err := NormalizeQuery(in.Query)
+		if err != nil {
+			return PostQuery{}, err
+		}
+		q.Terms = terms
+	}
 
 	switch in.Tab {
 	case "", "all":
@@ -638,34 +675,65 @@ func (s *service) ListFeed(ctx context.Context, in ListFeedQuery) ([]PostView, e
 		q.Feed = "hot"
 	case "follow":
 		if in.ViewerID == 0 {
-			return nil, ErrAuthRequired
+			return PostQuery{}, ErrAuthRequired
 		}
 		q.Feed = "follow"
 		// 关注来源聚合：#4 用户关注走 user 包，板块/话题关注走本包 repo
 		uids, err := s.users.FollowedUserIDs(ctx, in.ViewerID)
 		if err != nil {
-			return nil, err
+			return PostQuery{}, err
 		}
 		q.FollowedUserIDs = uids
 		bids, err := s.repo.ListFollowedBoardIDs(ctx, in.ViewerID)
 		if err != nil {
-			return nil, err
+			return PostQuery{}, err
 		}
 		q.FollowedBoardIDs = bids
 		tids, err := s.repo.ListFollowedTopicIDs(ctx, in.ViewerID)
 		if err != nil {
-			return nil, err
+			return PostQuery{}, err
 		}
 		q.FollowedTopicIDs = tids
 	default:
-		return nil, ErrInvalidFeedTab
+		return PostQuery{}, ErrInvalidFeedTab
 	}
+	return q, nil
+}
 
-	posts, err := s.repo.ListPosts(ctx, q)
-	if err != nil {
-		return nil, err
+// ---- 搜索词归一化（#78）----
+
+const (
+	minQueryRunes = 2  // 少于 2 码点的搜索词召回噪声过大，一律拒绝（D4）
+	maxQueryRunes = 64 // 搜索词总长度上限
+	maxQueryWords = 4  // 空白切分后的词数上限（多词 AND）
+)
+
+// NormalizeQuery 归一化搜索词：trim → 长度 2..64 码点 → 按空白切词 → 词数 ≤4 → 逐词转义
+// ILIKE 通配符。返回的词可直接进 pattern，但**不含 `%`**——`%词%` 的包裹属检索形态，归 repo 层。
+// 长度/词数越界一律 ErrInvalidQuery，不静默截断（设计文档 §6-3）。
+func NormalizeQuery(raw string) ([]string, error) {
+	s := strings.TrimSpace(raw)
+	if n := utf8.RuneCountInString(s); n < minQueryRunes || n > maxQueryRunes {
+		return nil, ErrInvalidQuery
 	}
-	return s.postViews(ctx, posts, in.ViewerID)
+	words := strings.Fields(s)
+	if len(words) > maxQueryWords {
+		return nil, ErrInvalidQuery
+	}
+	terms := make([]string, 0, len(words))
+	for _, w := range words {
+		terms = append(terms, escapeLikeMeta(w))
+	}
+	return terms, nil
+}
+
+// escapeLikeMeta 转义 ILIKE 的通配符与转义符，让输入按字面匹配（X1）。
+// 替换顺序不可调换：先转义 `\`，否则 `%`→`\%` 引入的 `\` 会被二次转义。
+func escapeLikeMeta(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	s = strings.ReplaceAll(s, "_", `\_`)
+	return s
 }
 
 // GetCommentTree 一次查整帖评论 + 内存拼树（#5 D3：调用方不见树算法）。

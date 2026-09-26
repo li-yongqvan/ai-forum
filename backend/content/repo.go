@@ -2,16 +2,17 @@ package content
 
 import "context"
 
-// PostQuery 列表查询参数（feed / 板块 / 话题 / 作者 / 标签 复用，分页统一 limit/offset）。
+// PostQuery 列表查询参数（feed / 板块 / 话题 / 作者 / 标签 / 搜索 复用，分页统一 limit/offset）。
 type PostQuery struct {
 	Feed             string // all | hot | follow（hot = 7 天窗口热度排序，#61）
 	AuthorID         *int64
 	BoardID          *int64
 	TopicID          *int64
-	Tag              *string // #54 标签过滤：按归一化小写名匹配
-	FollowedUserIDs  []int64 // follow 流：关注的用户
-	FollowedBoardIDs []int64 // follow 流：关注的板块
-	FollowedTopicIDs []int64 // follow 流：关注的话题
+	Tag              *string  // #54 标签过滤：按归一化小写名匹配
+	Terms            []string // #78 搜索词：已归一化（trim/切词/转义）的词，词间 AND；不含 %
+	FollowedUserIDs  []int64  // follow 流：关注的用户
+	FollowedBoardIDs []int64  // follow 流：关注的板块
+	FollowedTopicIDs []int64  // follow 流：关注的话题
 	Offset           int
 	Limit            int
 }
@@ -28,6 +29,8 @@ type Repo interface {
 	CreatePost(ctx context.Context, p *Post) error
 	GetPostByID(ctx context.Context, id int64) (*Post, error)
 	ListPosts(ctx context.Context, in PostQuery) ([]*Post, error)
+	// CountFeed 按与 ListPosts 同一筛选条件数帖子总数（#78 搜索态）；忽略 PostQuery 的 Offset/Limit。
+	CountFeed(ctx context.Context, in PostQuery) (int64, error)
 	CountPostsByAuthor(ctx context.Context, authorID int64) (int, error)
 	DeletePost(ctx context.Context, id int64) error // 软删
 	UpdatePostPinned(ctx context.Context, id int64, pinned bool) error

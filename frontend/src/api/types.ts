@@ -84,6 +84,7 @@ export interface PostList {
   items: Post[]
   page: number
   page_size: number
+  total?: number // #78 搜索结果条数：仅带 q 时后端才返回（X7），不参与翻页，仅用于"找到 N 条结果"
 }
 
 // 通用分页信封（#23；既有 PostList/NotificationList 暂不归并，新列表代码用 Page<T>）

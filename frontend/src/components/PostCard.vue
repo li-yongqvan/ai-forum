@@ -3,11 +3,14 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Post } from '../api/types'
 import { formatTime } from '../utils/format'
+import { hitWindow, splitByTerms } from '../utils/highlight'
 import { plainText } from '../utils/md'
 import AppIcon from './AppIcon.vue'
 import Avatar from './Avatar.vue'
 
-const props = defineProps<{ post: Post }>()
+// terms（#78，可选）：搜索词表，由结果页透传，仅用于展示层高亮/命中窗口。
+// 未传 ⇒ 分段数组退化为"整段非命中"单一节点，渲染结果与加这个功能之前一致（§7-5）。
+const props = defineProps<{ post: Post; terms?: string[] }>()
 const emit = defineEmits<{
   (e: 'like', id: number): void
   (e: 'fav', id: number): void
@@ -18,6 +21,18 @@ const router = useRouter()
 const liked = computed(() => props.post.viewer?.liked ?? false)
 const faved = computed(() => props.post.viewer?.favorited ?? false)
 const go = () => router.push(`/post/${props.post.id}`)
+
+const titleSegs = computed(() => splitByTerms(props.post.title, props.terms ?? []))
+const abstractSegs = computed(() => {
+  const plain = plainText(props.post.content)
+  if (!props.terms?.length) return [{ text: plain, hit: false }]
+  // X6：正文里定位最先出现的命中词，前后各约 40 字；仅标题命中时窗口不切（回落两行截断）
+  const w = hitWindow(plain, props.terms)
+  const segs = splitByTerms(w.text, props.terms)
+  if (w.headCut) segs.unshift({ text: '…', hit: false })
+  if (w.tailCut) segs.push({ text: '…', hit: false })
+  return segs
+})
 </script>
 
 <template>
@@ -43,8 +58,20 @@ const go = () => router.push(`/post/${props.post.id}`)
         @click.stop
       >#{{ t }}</a>
     </div>
-    <h3 class="ptitle">{{ post.title }}</h3>
-    <p class="pabstract">{{ plainText(post.content) }}</p>
+    <!-- #78 高亮：分段数组渲染（禁 v-html，§6-5）。段间不留源码空白以外的字符，
+         Vue 的 whitespace:condense 会吃掉换行缩进 ⇒ 无 terms 时就是一个文本节点，与改造前一致。 -->
+    <h3 class="ptitle">
+      <template v-for="(seg, i) in titleSegs" :key="i">
+        <mark v-if="seg.hit">{{ seg.text }}</mark>
+        <template v-else>{{ seg.text }}</template>
+      </template>
+    </h3>
+    <p class="pabstract">
+      <template v-for="(seg, i) in abstractSegs" :key="i">
+        <mark v-if="seg.hit">{{ seg.text }}</mark>
+        <template v-else>{{ seg.text }}</template>
+      </template>
+    </p>
     <div class="pacts" @click.stop>
       <button class="pact" :class="{ on: liked }" @click="emit('like', post.id)">
         <AppIcon name="heart" :size="18" />
@@ -167,5 +194,13 @@ const go = () => router.push(`/post/${props.post.id}`)
 }
 .cnt {
   font-variant-numeric: tabular-nums;
+}
+/* #78 命中段：底色高亮不改字号行高，避免卡片高度抖动 */
+.ptitle mark,
+.pabstract mark {
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: 3px;
+  padding: 0 1px;
 }
 </style>
