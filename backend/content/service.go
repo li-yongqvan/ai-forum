@@ -208,7 +208,7 @@ var (
 	ErrInvalidFeedTab        = errors.New("content: 信息流 tab 非法")
 	ErrContentEmpty          = errors.New("content: 内容不能为空")
 	ErrMentionedUserNotFound = errors.New("content: 被提及用户不存在或不可用")
-	ErrInvalidQuery          = errors.New("content: 搜索词不合法") // #78：长度 2..64 码点、词数 ≤4，超出即拒绝（不静默截断）
+	ErrInvalidQuery          = errors.New("content: 搜索词不合法") // #78：长度 2..64 码点、词数 ≤4，超出即拒绝（不静默截断）；#81：非法 UTF-8 同样归此哨兵
 )
 
 // ---- Service 接口（粗粒度命令 + 读模型查询，#4/#7） ----
@@ -708,11 +708,16 @@ const (
 	maxQueryWords = 4  // 空白切分后的词数上限（多词 AND）
 )
 
-// NormalizeQuery 归一化搜索词：trim → 长度 2..64 码点 → 按空白切词 → 词数 ≤4 → 逐词转义
+// NormalizeQuery 归一化搜索词：trim → UTF-8 有效性 → 长度 2..64 码点 → 按空白切词 → 词数 ≤4 → 逐词转义
 // ILIKE 通配符。返回的词可直接进 pattern，但**不含 `%`**——`%词%` 的包裹属检索形态，归 repo 层。
-// 长度/词数越界一律 ErrInvalidQuery，不静默截断（设计文档 §6-3）。
+// 非法 UTF-8 / 长度 / 词数越界一律 ErrInvalidQuery，不静默截断（设计文档 §6-3；#81：非法字节直达 PG
+// 会报 SQLSTATE 22021 冒泡成 500，须在此 seam 拦成 400——RuneCountInString 把非法字节按 RuneError
+// 计 1 码点，长度校验拦不住如 "\xff\xff" 这类两字节输入）。
 func NormalizeQuery(raw string) ([]string, error) {
 	s := strings.TrimSpace(raw)
+	if !utf8.ValidString(s) {
+		return nil, ErrInvalidQuery
+	}
 	if n := utf8.RuneCountInString(s); n < minQueryRunes || n > maxQueryRunes {
 		return nil, ErrInvalidQuery
 	}

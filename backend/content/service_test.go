@@ -1157,6 +1157,10 @@ func TestNormalizeQuery(t *testing.T) {
 		{"65 码点拒绝", strings.Repeat("论", 65), nil, true},
 		// 30 个汉字 = 90 字节：按字节会被误判超长，按码点合法（X1 的"字符"= 码点）
 		{"长度按码点而非字节", strings.Repeat("论", 30), []string{strings.Repeat("论", 30)}, false},
+		// #81：非法 UTF-8 一律拒绝。RuneCountInString 把非法字节按 RuneError 计 1 码点，
+		// 故 "\xff\xff" 能通过长度校验，必须显式 utf8.ValidString 拦截，否则直达 PG 报 22021 → 500。
+		{"非法 UTF-8 拒绝（两字节，长度校验拦不住）", "\xff\xff", nil, true},
+		{"非法 UTF-8 混在合法中文里同样拒绝", "\xff\xfe论坛", nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
