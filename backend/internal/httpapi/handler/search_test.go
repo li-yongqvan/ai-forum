@@ -315,6 +315,10 @@ func TestSearchPosts(t *testing.T) {
 			// 二者在此冲突，取 6-3（分享一个 q=空格 的链接若静默变成全站 Feed，比报错更坏）；
 			// 前端 Search.vue 的 invalidTip 已先拦住，这条钉的是绕过前端的直接请求。
 			{"纯空白（§7-2/6-3 冲突取拒绝）", "q=" + urlQuery("   ")},
+			// #81 热修：GBK percent-encoding 的非法 UTF-8 字节（如 q=%FF）此前直达 PG 报
+			// SQLSTATE 22021 → 500；现由 NormalizeQuery 拦为 ErrInvalidQuery → 400。
+			// %FF 是合法 percent-encoding（Decode 出 0xFF 字节），ParseQuery 不会拒收。
+			{"非法 UTF-8 字节（#81：500→400）", "q=%FF%FE"},
 		}
 		for _, c := range cases {
 			w := doJSON(t, r, http.MethodGet, "/api/v1/posts?"+c.query, nil, tok)

@@ -19,7 +19,7 @@
 - **搜索词（#78）**：`ListFeedQuery.Query` 收**原样字符串**，归一化在 service 层（`NormalizeQuery`），调用方（handler）不校验、不切词、不转义。契约：
   - 按空白切词，词间 **AND**；每词须**标题或正文**含之（`(title ILIKE ? OR content ILIKE ?)`）。
   - **不区分大小写**（`ILIKE` 语义），**按字面匹配**——`\` `%` `_` 先转义再进 pattern，故搜 `50%` 不会被当成前缀通配。中文按**子串**召回（这是选 `ILIKE` 而非 `to_tsvector` 的唯一原因：内置分词对整串中文只切一个 token，搜「论坛」召回 0）。
-  - 长度 **2..64 码点**、词数 **≤4**，越界一律 `ErrInvalidQuery`，**不静默截断**。
+  - 长度 **2..64 码点**、词数 **≤4**，越界一律 `ErrInvalidQuery`，**不静默截断**；**非法 UTF-8 字节同样拒绝**（#81：不放行到 PG 冒泡成 500）。
   - **无相关性打分**：排序 =「标题含全部词」者优先 → `created_at` DESC，且搜索态**置顶不参与**排序（非搜索态仍 `is_pinned DESC` 优先）。繁简、变音符号不归一。
   - **治理与全站同源**：走同一个查询构造器与同一个 GORM 软删 scope ⇒ 软删帖不召回、封禁/注销作者内容照常召回，搜索**不新增**任何治理谓词。
   - **仅 `q` 非空时**才调 `CountFeed` 并在响应里给 `total`；`total` 与 `items` 由同一 `PostQuery` 构造器保证同条件，且**不参与翻页**。
@@ -42,7 +42,7 @@
 | `ErrPostNotFound` / `ErrCommentNotFound` / `ErrBoardNotFound` / `ErrTopicNotFound` | 目标不存在（含软删） | 404 |
 | `ErrForbidden` | 非作者且非 moderator+ 删帖/评论；非 moderator+ 置顶/精华 | 403 |
 | `ErrAlreadyLiked` / `ErrAlreadyFavorited` / `ErrAlreadyFollowed` | 重复操作 | 409 |
-| `ErrTopicNotInBoard` / `ErrParentNotInPost` / `ErrContentEmpty` / `ErrInvalidTargetType` / `ErrInvalidFeedTab` / `ErrInvalidQuery` | 参数非法（`ErrInvalidQuery` = #78 搜索词长度不在 2..64 或词数 >4） | 400 |
+| `ErrTopicNotInBoard` / `ErrParentNotInPost` / `ErrContentEmpty` / `ErrInvalidTargetType` / `ErrInvalidFeedTab` / `ErrInvalidQuery` | 参数非法（`ErrInvalidQuery` = #78 搜索词长度不在 2..64 或词数 >4；#81 起含非法 UTF-8） | 400 |
 | `ErrAuthRequired` | 关注流 / 收藏与关注列表游客 | 401 |
 
 > 其余 error 为基础设施故障，调用方按 500 处理。权限校验在命令内（#9 §5.0 双保险），前端可见性仅是体验层。
